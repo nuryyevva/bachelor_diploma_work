@@ -27,6 +27,7 @@ class AdaptiveModel:
         kernel (str): Тип ядра ('RBF', 'Matern', 'RationalQuadratic').
         max_iterations (int): Максимальное количество итераций.
         target_rmse (float): Целевой RMSE для ранней остановки.
+        convergence_patience (int): Количество итераций подряд ниже порога для остановки.
         model: Текущая обученная модель GP.
         rmse_history (list): История значений RMSE на тестовых данных.
         r2_history (list): История значений R² на тестовых данных.
@@ -41,7 +42,8 @@ class AdaptiveModel:
             kernel="RBF",
             max_iterations=20,
             target_rmse=None,
-            scaler_y=None
+            scaler_y=None,
+            convergence_patience=3
     ):
         """
         Инициализация адаптивной модели.
@@ -52,12 +54,15 @@ class AdaptiveModel:
             max_iterations (int): Максимальное количество итераций. По умолчанию 20.
             target_rmse (float): Целевой RMSE для ранней остановки. Если None — не останавливается.
             scaler_y (StandardScaler): Скалер целевой переменной для обратного преобразования.
+            convergence_patience (int): Сколько итераций подряд нужно быть ниже target_rmse
+                                        для остановки. По умолчанию 1 (остановка сразу).
         """
         self.strategy = strategy
         self.kernel = kernel
         self.max_iterations = max_iterations
         self.target_rmse = target_rmse
         self.scaler_y = scaler_y
+        self.convergence_patience = convergence_patience  # ← СОХРАНЯЕМ ПАРАМЕТР
 
         self.model = None
         self.rmse_history = []
@@ -75,11 +80,6 @@ class AdaptiveModel:
         """
         if self.kernel == "RBF":
             return ConstantKernel() * RBF()
-            # Явно задаем границы для стабильности
-            # return ConstantKernel(1.0, (1e-6, 1e6)) * RBF(
-            #     length_scale=[1.0, 1.0],
-            #     length_scale_bounds=(1e-4, 1e4)
-            # )
         elif self.kernel == "Matern":
             return ConstantKernel() * Matern(nu=1.5)
         elif self.kernel == "RationalQuadratic":
@@ -118,7 +118,7 @@ class AdaptiveModel:
         print(f"\n🔍 ПРОВЕРКА МАСШТАБА ПЕРЕД FIT:")
         print(f"  X_train mean: {X_train.mean():.4f} (должно быть ~0)")
         print(f"  y_train mean: {y_train.mean():.4f} (должно быть ~0)")
-        print(f"  y_test (для метрик) mean: {y_test.mean():.2f} (должно быть ~4 500 000)")
+        print(f"  y_test (для метрик) mean: {y_test.mean():.2f}")
 
         print(f"Начало адаптивного обучения...")
         print(f"Начальный набор: {len(X_train)} точек")
@@ -126,7 +126,12 @@ class AdaptiveModel:
         print(f"Тестовый набор: {len(X_test)} точек")
         print(f"Стратегия: {self.strategy.__class__.__name__}")
         print(f"Ядро: {self.kernel}")
+        print(f"Target RMSE: {self.target_rmse:.2f} кН/м")
+        print(f"Convergence Patience: {self.convergence_patience} итераций")  # ← ИНФО В КОНСОЛЬ
         print("-" * 50)
+
+        # ← НОВАЯ ПЕРЕМЕННАЯ: счётчик итераций ниже порога
+        consecutive_below_threshold = 0
 
         for iteration in range(self.max_iterations):
             # 1. Обучаем модель на текущих данных
@@ -138,22 +143,17 @@ class AdaptiveModel:
             )
             self.model.fit(X_train, y_train)
 
-            if iteration == 0:  # Только на первой итерации
-                test_pred_raw = self.model.predict(X_test)  # Нормализованное
-                test_pred_final = self.predict(X_test)  # После inverse_transform
+            if iteration == 0:
+                test_pred_raw = self.model.predict(X_test)
+                test_pred_final = self.predict(X_test)
 
                 print(f"\n🔍 ОТЛАДКА ПРЕДСКАЗАНИЙ (итерация 1):")
-                print(f"  test_pred_raw mean: {test_pred_raw.mean():.4f} (должно быть ~0)")
-                print(f"  test_pred_final mean: {test_pred_final.mean():.2f} (должно быть ~{y_test.mean():.2f})")
+                print(f"  test_pred_raw mean: {test_pred_raw.mean():.4f}")
+                print(f"  test_pred_final mean: {test_pred_final.mean():.2f}")
                 print(f"  y_test mean: {y_test.mean():.2f}")
-                print(f"  scaler_y.scale_: {self.scaler_y.scale_}")
-                print(f"  scaler_y.mean_: {self.scaler_y.mean_}")
 
             # 2. Оцениваем качество на тестовых данных
-            # current_rmse = calculate_rmse(self.model, X_test, y_test)
-            # current_r2 = calculate_r2(self.model, X_test, y_test)
-            # current_mae = calculate_mae(self.model, X_test, y_test)
-            y_pred = self.predict(X_test)  # Использует self.predict() со скалером!
+            y_pred = self.predict(X_test)
             current_rmse = calculate_rmse(y_pred, y_test)
             current_r2 = calculate_r2(y_pred, y_test)
             current_mae = calculate_mae(y_pred, y_test)
@@ -170,10 +170,20 @@ class AdaptiveModel:
                   f"R²: {current_r2:.4f} | "
                   f"MAE: {current_mae:.2f} кН/м")
 
-            # 3. Проверяем условие ранней остановки
+            # 3. Проверяем условие ранней остановки с учётом стабильности ← ИЗМЕНЕНО
             if self.target_rmse is not None and current_rmse <= self.target_rmse:
-                print(f"\n✅ Достигнут целевой RMSE ({self.target_rmse:.2f}) на итерации {iteration + 1}")
-                break
+                consecutive_below_threshold += 1  # ← УВЕЛИЧИВАЕМ СЧЁТЧИК
+
+                print(f"  ⚡ Ниже порога: {consecutive_below_threshold}/{self.convergence_patience}")
+
+                # Останавливаемся, только если достигли порога нужное количество раз подряд
+                if consecutive_below_threshold >= self.convergence_patience:
+                    print(f"\n✅ Достигнут целевой RMSE ({self.target_rmse:.2f}) "
+                          f"на {consecutive_below_threshold} итерации(ях) подряд")
+                    break
+            else:
+                # ← СБРАСЫВАЕМ СЧЁТЧИК, если вышли из порога
+                consecutive_below_threshold = 0
 
             # 4. Если кандидатов больше нет — выходим
             if len(X_pool) == 0:
@@ -201,6 +211,8 @@ class AdaptiveModel:
 
         print("-" * 50)
         print(f"Обучение завершено. Финальный RMSE: {self.rmse_history[-1]:.2f} кН/м")
+        print(f"Всего итераций: {len(self.rmse_history)}")
+        print(f"Итераций ниже порога подряд: {consecutive_below_threshold}")
 
         return {
             'rmse_history': self.rmse_history,
@@ -212,7 +224,8 @@ class AdaptiveModel:
             'final_r2': self.r2_history[-1],
             'final_mae': self.mae_history[-1],
             'n_iterations': len(self.rmse_history),
-            'n_final_points': len(X_train)
+            'n_final_points': len(X_train),
+            'consecutive_below_threshold': consecutive_below_threshold  # ← НОВОЕ В РЕЗУЛЬТАТАХ
         }
 
     def predict(self, X):
@@ -232,7 +245,7 @@ class AdaptiveModel:
         if self.scaler_y is not None:
             y_pred = self.scaler_y.inverse_transform(
                 y_pred.reshape(-1, 1)
-            ).ravel()  # Возвращаем в оригинальный масштаб
+            ).ravel()
 
         return y_pred
 
@@ -254,7 +267,7 @@ class AdaptiveModel:
             y_pred = self.scaler_y.inverse_transform(
                 y_pred.reshape(-1, 1)
             ).ravel()
-            std = std * self.scaler_y.scale_  # Масштабируем std
+            std = std * self.scaler_y.scale_
 
         return y_pred, std
 
