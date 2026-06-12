@@ -13,6 +13,7 @@ from typing import Dict, Tuple, Optional, List
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.utils.data import load_and_split_data, find_latest_data_file
+from src.utils.evaluator import make_evaluate_fn, get_experiment_bounds
 from src.utils.metrics import calculate_rmse, calculate_r2, calculate_mae
 from src.utils.plots import plot_convergence, plot_data_distribution
 from src.utils.preprocessor import DataPreprocessor
@@ -36,7 +37,9 @@ class ExperimentConfig:
         max_iterations: int = 50,                 # Макс. итераций адаптации
         target_improvement: float = 0.30,         # Целевое улучшение (5%)
         kernel: str = "RBF",                      # Тип ядра GP
-        convergence_patience: int = 2             # Для стабильности
+        convergence_patience: int = 2,            # Для стабильности
+        n_candidates: int = 1000,                 # Кандидатов на итерацию
+        seed: int = 42,
     ):
         self.noise_type = noise_type
         self.use_all_features = use_all_features
@@ -46,6 +49,8 @@ class ExperimentConfig:
         self.target_improvement = target_improvement
         self.kernel = kernel
         self.convergence_patience = convergence_patience
+        self.n_candidates = n_candidates
+        self.seed = seed
 
         # Автоматический расчёт целевого RMSE (будет установлен в runtime)
         self.target_rmse = None
@@ -128,6 +133,11 @@ def preprocess_data(data: Dict, config: ExperimentConfig) -> Tuple[Dict, DataPre
     data['y_candidates'] = y_candidates
     data['X_test'] = X_test
     data['y_test_original'] = y_test_original
+    data['bounds'] = get_experiment_bounds(use_all_features=config.use_all_features)
+    data['evaluate_fn'] = make_evaluate_fn(
+        add_noise=(config.noise_type == 'with_noise'),
+        seed=config.seed,
+    )
 
     return data, preprocessor
 
@@ -175,16 +185,18 @@ def train_non_adaptive_model(
 def train_adaptive_model(
     X_initial: np.ndarray,
     y_initial: np.ndarray,
-    X_candidates: np.ndarray,
-    y_candidates: np.ndarray,
     X_test: np.ndarray,
     y_test_original: np.ndarray,
     preprocessor: DataPreprocessor,
+    bounds: list,
+    evaluate_fn,
     target_rmse: float,
     max_iterations: int,
     kernel: str = "RBF",
     convergence_patience: int = 3,
-    strategy=None
+    n_candidates: int = 1000,
+    seed: int = 42,
+    strategy=None,
 ) -> Dict:
     """
     Обучает адаптивную модель с итеративным выбором точек.
@@ -205,16 +217,20 @@ def train_adaptive_model(
         max_iterations=max_iterations,
         target_rmse=target_rmse,
         scaler_y=preprocessor.scaler_y,
-        convergence_patience=convergence_patience
+        convergence_patience=convergence_patience,
+        n_candidates=n_candidates,
     )
 
     results = model.train(
         X_initial=X_initial,
         y_initial=y_initial,
-        X_candidates=X_candidates,
-        y_candidates=y_candidates,
         X_test=X_test,
-        y_test=y_test_original
+        y_test=y_test_original,
+        bounds=bounds,
+        evaluate_fn=evaluate_fn,
+        scaler_X=preprocessor.scaler_X,
+        seed=seed,
+        verbose=True,
     )
 
     print(f"  ✅ Финальный RMSE: {results['final_rmse']:.2f} кН/м")
@@ -433,15 +449,17 @@ def run_experiment(config: ExperimentConfig = None, data_dir: str = "../data", s
     adaptive_results = train_adaptive_model(
         X_initial=data['X_initial'],
         y_initial=data['y_initial'],
-        X_candidates=data['X_candidates'],
-        y_candidates=data['y_candidates'],
         X_test=data['X_test'],
         y_test_original=data['y_test_original'],
         preprocessor=preprocessor,
+        bounds=data['bounds'],
+        evaluate_fn=data['evaluate_fn'],
         target_rmse=config.target_rmse,
         max_iterations=config.max_iterations,
         kernel=config.kernel,
-        convergence_patience=config.convergence_patience
+        convergence_patience=config.convergence_patience,
+        n_candidates=config.n_candidates,
+        seed=config.seed,
     )
 
     # 5. Компиляция и сохранение результатов
@@ -493,7 +511,7 @@ if __name__ == "__main__":
             results['adaptive']['n_points_history']
     )):
         below = "✅" if rmse <= baseline else "❌"
-        print(f"{i + 1:<10} | {n_points:<10} | {rmse / 1e3:>10.2f}    | {below:<10}")
+        print(f"{i + 1:<10} | {n_points:<10} | {rmse:>10.2f}    | {below:<10}")
 
         # Покажем первые 5 и последние 5 итераций
         if i == 4:

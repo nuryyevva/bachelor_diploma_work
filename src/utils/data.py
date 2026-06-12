@@ -1,8 +1,18 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+# CSV хранит critical_load в Н/м; для экспериментов используем кН/м
+N_PER_M_TO_KN_PER_M = 1e-3
 
-def load_and_split_data(data_path, n_initial=40, test_size=20, use_all_features=True):
+
+def load_and_split_data(
+    data_path,
+    n_initial=40,
+    test_size=20,
+    use_all_features=True,
+    random_state=42,
+    verbose=True,
+):
     """
     Загрузка и разделение данных на обучающую, кандидатскую и тестовую выборки.
 
@@ -11,6 +21,8 @@ def load_and_split_data(data_path, n_initial=40, test_size=20, use_all_features=
         n_initial (int): Количество точек в начальной обучающей выборке.
         test_size (int): Количество точек в тестовой выборке.
         use_all_features (bool): Если True — использовать все 3 признака, иначе — только 2.
+        random_state (int): Seed для разбиения на initial / candidates / test.
+        verbose (bool): Печатать диагностику загрузки.
 
     Returns:
         tuple: (X_initial, y_initial, X_candidates, y_candidates, X_test, y_test)
@@ -20,38 +32,43 @@ def load_and_split_data(data_path, n_initial=40, test_size=20, use_all_features=
     # Выбор признаков: 3D (с aspect_ratio) или 2D (без него)
     if use_all_features:
         feature_cols = ["theta_base_deg", "total_thickness_m", "aspect_ratio"]
-        print(f"  ✅ Используем 3 признака: {feature_cols}")
+        if verbose:
+            print(f"  ✅ Используем 3 признака: {feature_cols}")
     else:
         feature_cols = ["theta_base_deg", "total_thickness_m"]
-        print(f"  ✅ Используем 2 признака: {feature_cols}")
+        if verbose:
+            print(f"  ✅ Используем 2 признака: {feature_cols}")
 
     X = df[feature_cols].values
-    y = df["critical_load_N_per_m"].values
+    y = df["critical_load_N_per_m"].values * N_PER_M_TO_KN_PER_M
 
-    print(f"\n🔍 ВСЕГО ДАННЫХ: {len(df)} точек")
-    print(f"  Признаки: {X.shape[1]}D")
-    print(f"  Диапазон y: {y.min() / 1e3:.2f} - {y.max() / 1e3:.2f} кН/м")
+    if verbose:
+        print(f"\n🔍 ВСЕГО ДАННЫХ: {len(df)} точек")
+        print(f"  Признаки: {X.shape[1]}D")
+        print(f"  Диапазон y: {y.min():.2f} - {y.max():.2f} кН/м")
 
     # 1. Сначала отделяем ТЕСТ
     X_temp, X_test, y_temp, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42, shuffle=True
+        X, y, test_size=test_size, random_state=random_state, shuffle=True
     )
 
-    print(f"  После 1-го split: temp={len(X_temp)}, test={len(X_test)}")
+    if verbose:
+        print(f"  После 1-го split: temp={len(X_temp)}, test={len(X_test)}")
 
     # 2. Из ОСТАВШИХСЯ берем INITIAL
     X_initial, X_candidates, y_initial, y_candidates = train_test_split(
-        X_temp, y_temp, train_size=n_initial, random_state=42, shuffle=True
+        X_temp, y_temp, train_size=n_initial, random_state=random_state, shuffle=True
     )
 
-    print(f"  После 2-го split: initial={len(X_initial)}, candidates={len(X_candidates)}")
-    print(
-        f"  Проверка: {len(X_initial)} + {len(X_candidates)} + {len(X_test)} = "
-        f"{len(X_initial) + len(X_candidates) + len(X_test)} (должно быть {len(df)})"
-    )
+    if verbose:
+        print(f"  После 2-го split: initial={len(X_initial)}, candidates={len(X_candidates)}")
+        print(
+            f"  Проверка: {len(X_initial)} + {len(X_candidates)} + {len(X_test)} = "
+            f"{len(X_initial) + len(X_candidates) + len(X_test)} (должно быть {len(df)})"
+        )
 
     # 3. Дополнительная проверка для 3D задачи
-    if use_all_features and X.shape[1] == 3:
+    if verbose and use_all_features and X.shape[1] == 3:
         print(f"\n  ⚠️ 3D задача: рекомендуется n_initial >= 30-40 точек")
         if n_initial < 30:
             print(f"  ⚠️ Внимание: n_initial={n_initial} может быть недостаточно для 3D!")

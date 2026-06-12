@@ -1,191 +1,99 @@
+import os
+import sys
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from datetime import datetime
-import os
 
-# ======================
-# 1. ПАРАМЕТРЫ МОДЕЛИ
-# ======================
-# seed рандомайзера
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.physics.buckling import (
+    B_WIDTH_M,
+    FEATURE_BOUNDS,
+    N_PER_M_TO_KN_PER_M,
+    calibrate_noise_sigma,
+    calculate_D_matrix,
+    calculate_Q_matrix,
+    critical_buckling_load,
+    evaluate_clean,
+    evaluate_point,
+    get_feature_bounds,
+)
+
 seed = 132
+n_points = 1000
+noise_std = 0.05
+add_noise = True
 
-# Свойства материала (углепластик T300/934)
-E1 = 150e9  # Па (модуль вдоль волокон)
-E2 = 9e9  # Па (модуль поперек волокон)
-G12 = 7e9  # Па (модуль сдвига)
-nu12 = 0.32  # Коэффициент Пуассона
-density = 1600  # кг/м³ (плотность)
-
-# Базовая геометрия пластины
-b = 0.5  # Ширина пластины вдоль оси y (м) - фиксирована
-m = 1  # Число полуволн вдоль длины (минимальная критическая нагрузка)
-
-# Граничные условия: просто опертая пластина (SSSS)
-K = 4  # Для SSSS пластины при одноосном сжатии
-
-# Параметры генерации данных
-n_points = 150  # Увеличили количество точек для 3D задачи
-theta_range = (0, 45)  # Диапазон углов укладки (градусы)
-thickness_range = (2e-3, 20e-3)  # Диапазон общей толщины (м)
-aspect_ratio_range = (1.0, 4.0)  # Соотношение сторон a/b
-
-# Параметры шума
-noise_std = 0.05  # 5% шум от стандартного отклонения целевой переменной
-add_noise = True  # Флаг добавления шума
-
-
-# ======================
-# 2. ФУНКЦИИ РАСЧЕТА
-# ======================
-def calculate_Q_matrix(E1, E2, G12, nu12):
-    """Вычисление матрицы жесткости для ортотропного слоя в локальной системе координат"""
-    nu21 = nu12 * E2 / E1
-    Q11 = E1 / (1 - nu12 * nu21)
-    Q12 = nu12 * E2 / (1 - nu12 * nu21)
-    Q22 = E2 / (1 - nu12 * nu21)
-    Q66 = G12
-    return np.array([[Q11, Q12, 0],
-                     [Q12, Q22, 0],
-                     [0, 0, Q66]])
-
-
-def transform_Q(Q, theta_deg):
-    """Трансформация матрицы жесткости при повороте слоя на угол theta"""
-    theta = np.radians(theta_deg)
-    c = np.cos(theta)
-    s = np.sin(theta)
-    T = np.array([[c ** 2, s ** 2, 2 * c * s],
-                  [s ** 2, c ** 2, -2 * c * s],
-                  [-c * s, c * s, c ** 2 - s ** 2]])
-    T_inv = np.array([[c ** 2, s ** 2, -2 * c * s],
-                      [s ** 2, c ** 2, 2 * c * s],
-                      [c * s, -c * s, c ** 2 - s ** 2]])
-    return T_inv.T @ Q @ T_inv
-
-
-def calculate_D_matrix(angles, thicknesses, Q0):
-    """Вычисление матрицы изгибных жесткостей D для симметричного ламината"""
-    total_thickness = sum(thicknesses)
-    z = []  # Координаты границ слоев по толщине
-    current_z = -total_thickness / 2
-    z.append(current_z)
-    for t in thicknesses:
-        current_z += t
-        z.append(current_z)
-
-    D = np.zeros((3, 3))
-    for i, theta in enumerate(angles):
-        Q = transform_Q(Q0, theta)
-        zk = z[i]
-        zk1 = z[i + 1]
-        D += Q * (zk1 ** 3 - zk ** 3) / 3
-    return D
-
-
-def critical_buckling_load(D11, D22, D12, D66, a, b, m=1):
-    """Аналитическая формула критической нагрузки для ортотропной пластины
-    Источник: Jones, R.M. Mechanics of Composite Materials (1999)"""
-    term1 = D11 * (m * b / a) ** 2
-    term2 = 2 * (D12 + 2 * D66)
-    term3 = D22 * (a / (m * b)) ** 2
-    N_cr = (np.pi ** 2 / b ** 2) * (term1 + term2 + term3)
-    return N_cr  # Н/м (нагрузка на единицу длины)
+theta_range = FEATURE_BOUNDS[0]
+thickness_range = FEATURE_BOUNDS[1]
+aspect_ratio_range = FEATURE_BOUNDS[2]
 
 
 def generate_data(n_points, add_noise=False, noise_std=0.05, seed=42):
     """
     Генерация данных с опциональным добавлением шума.
 
-    Args:
-        n_points: Количество точек данных
-        add_noise: Добавлять ли шум к целевой переменной
-        noise_std: Стандартное отклонение шума (доля от std целевой переменной)
-        seed: Seed для воспроизводимости
-
-    Returns:
-        df: DataFrame с данными
+    Шум: N(0, sigma), sigma = noise_std * std(N_cr_clean) по всей выборке.
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+    Q0 = calculate_Q_matrix()
 
-    # Базовая матрица Q для материала
-    Q0 = calculate_Q_matrix(E1, E2, G12, nu12)
+    rows = []
+    clean_values = []
 
-    data = []
-    for i in range(n_points):
-        # Генерация случайных параметров
-        theta_base = np.random.uniform(*theta_range)  # Базовый угол укладки
-        total_thickness = np.random.uniform(*thickness_range)  # Общая толщина
-        aspect_ratio = np.random.uniform(*aspect_ratio_range)  # Соотношение сторон a/b
+    for _ in range(n_points):
+        theta_base = rng.uniform(*theta_range)
+        total_thickness = rng.uniform(*thickness_range)
+        aspect_ratio = rng.uniform(*aspect_ratio_range)
+        a = aspect_ratio * B_WIDTH_M
 
-        # Вычисляем длину пластины из соотношения сторон
-        a = aspect_ratio * b
-
-        # Схема укладки: [θ, -θ, 90, 0]s (симметричная, 8 слоев)
         angles = [theta_base, -theta_base, 90, 0, 0, 90, -theta_base, theta_base]
-
-        # Равномерное распределение толщины по слоям
         layer_thickness = total_thickness / len(angles)
         thicknesses = [layer_thickness] * len(angles)
 
-        # Расчет матрицы D
         D = calculate_D_matrix(angles, thicknesses, Q0)
-        D11, D12, D22, D66 = D[0, 0], D[0, 1], D[1, 1], D[2, 2]
+        N_cr = critical_buckling_load(D[0, 0], D[1, 1], D[0, 1], D[2, 2], a)
+        clean_values.append(N_cr)
 
-        # Расчет критической нагрузки
-        N_cr = critical_buckling_load(D11, D22, D12, D66, a, b, m)
-
-        # Добавление шума (если включено)
-        if add_noise:
-            noise = np.random.normal(0, noise_std * N_cr)
-            N_cr_noisy = N_cr + noise
-            # Гарантируем положительность нагрузки
-            N_cr_noisy = max(N_cr_noisy, 0.1 * N_cr)
-        else:
-            N_cr_noisy = N_cr
-
-        # Сохранение данных
-        data.append({
+        rows.append({
             "theta_base_deg": theta_base,
             "total_thickness_m": total_thickness,
             "aspect_ratio": aspect_ratio,
-            "a_m": a,  # Сохраняем вычисленную длину
-            "D11_Nm": D11,
-            "D12_Nm": D12,
-            "D22_Nm": D22,
-            "D66_Nm": D66,
-            "critical_load_N_per_m": N_cr_noisy,
-            "critical_load_clean_N_per_m": N_cr  # Чистое значение для сравнения
+            "a_m": a,
+            "D11_Nm": D[0, 0],
+            "D12_Nm": D[0, 1],
+            "D22_Nm": D[1, 1],
+            "D66_Nm": D[2, 2],
+            "critical_load_clean_N_per_m": N_cr,
         })
 
-    return pd.DataFrame(data)
+    sigma = noise_std * float(np.std(clean_values))
+    noises = rng.normal(0, sigma, size=n_points)
+    print(f"  Sigma шума: {sigma:.2f} Н/м ({noise_std * 100:.0f}% от std чистых значений)")
+    print(f"  Mean noise: {np.mean(noises):.4f} (должно быть ~0)")
+
+    for i, row in enumerate(rows):
+        N_cr = row["critical_load_clean_N_per_m"]
+        if add_noise:
+            N_cr_noisy = max(N_cr + noises[i], 1.0)
+        else:
+            N_cr_noisy = N_cr
+        row["critical_load_N_per_m"] = N_cr_noisy
+
+    return pd.DataFrame(rows)
 
 
-def save_and_visualize(df, seed, output_dir, suffix=""):
-    """
-    Сохранение данных и создание визуализаций.
-
-    Args:
-        df: DataFrame с данными
-        seed: Seed рандомайзкра
-        output_dir: Папка для сохранения
-        suffix: Суффикс для имен файлов
-    """
+def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
     os.makedirs(output_dir, exist_ok=True)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # ======================
-    # СОХРАНЕНИЕ В CSV
-    # ======================
     csv_filename = os.path.join(output_dir, f"composite_plate_buckling_data_{suffix}{timestamp}.csv")
     df.to_csv(csv_filename, index=False)
     print(f"✅ Данные сохранены в: {csv_filename}")
 
-    # ======================
-    # СТАТИСТИКА
-    # ======================
     stats = (
         f"Random seed: {seed}\n"
         f"Количество точек: {len(df)}\n"
@@ -196,25 +104,20 @@ def save_and_visualize(df, seed, output_dir, suffix=""):
         f"Средняя критическая нагрузка: {df['critical_load_N_per_m'].mean() / 1e3:.2f} кН/м"
     )
 
-    if 'critical_load_clean_N_per_m' in df.columns:
-        clean_stats = (
+    if "critical_load_clean_N_per_m" in df.columns:
+        stats += (
             f"\n(Без шума: {df['critical_load_clean_N_per_m'].min() / 1e3:.2f} - "
             f"{df['critical_load_clean_N_per_m'].max() / 1e3:.2f} кН/м)"
         )
-        stats += clean_stats
 
     print("\n📊 Статистика данных:")
     print(stats)
 
-    # Сохранение статистики в файл
     stats_filename = os.path.join(output_dir, f"data_statistics_{suffix}{timestamp}.txt")
-    with open(stats_filename, 'w', encoding='utf-8') as f:
+    with open(stats_filename, "w", encoding="utf-8") as f:
         f.write(stats)
     print(f"✅ Статистика сохранена в: {stats_filename}")
 
-    # ======================
-    # ВИЗУАЛИЗАЦИЯ
-    # ======================
     fig = plt.figure(figsize=(20, 12))
 
     # 1. Нагрузка vs Толщина
@@ -284,78 +187,60 @@ def save_and_visualize(df, seed, output_dir, suffix=""):
 
     plt.tight_layout()
     plot_filename = os.path.join(output_dir, f"buckling_data_analysis_{suffix}{timestamp}.png")
-    plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+    plt.savefig(plot_filename, dpi=500, bbox_inches="tight")
     print(f"✅ Графики сохранены в: {plot_filename}")
-    plt.show()
+    plt.close()
 
-    # ======================
-    # ДОПОЛНИТЕЛЬНО: Сравнение зашумлённых и чистых данных
-    # ======================
-    if 'critical_load_clean_N_per_m' in df.columns and add_noise:
-        fig2, ax = plt.subplots(figsize=(10, 6))
-        ax.scatter(df['critical_load_clean_N_per_m'] / 1e3,
-                   df['critical_load_N_per_m'] / 1e3,
-                   alpha=0.6, c='darkorange', s=50)
-
-        # Линия идеального соответствия
-        min_val = df['critical_load_clean_N_per_m'].min() / 1e3
-        max_val = df['critical_load_clean_N_per_m'].max() / 1e3
-        ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Идеальное соответствие')
-
-        ax.set_xlabel('Чистая нагрузка (кН/м)', fontsize=11)
-        ax.set_ylabel('Зашумлённая нагрузка (кН/м)', fontsize=11)
-        ax.set_title('Сравнение чистых и зашумлённых данных', fontsize=12)
-        ax.legend()
+    if "critical_load_clean_N_per_m" in df.columns and add_noise_flag:
+        fig2, ax = plt.subplots(figsize=(8, 6))
+        ax.scatter(
+            df["critical_load_clean_N_per_m"] / 1e3,
+            df["critical_load_N_per_m"] / 1e3,
+            alpha=0.5,
+            s=20,
+        )
+        min_val = df["critical_load_clean_N_per_m"].min() / 1e3
+        max_val = df["critical_load_clean_N_per_m"].max() / 1e3
+        ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2)
+        ax.set_xlabel("Чистая (кН/м)")
+        ax.set_ylabel("Зашумлённая (кН/м)")
         ax.grid(True, alpha=0.3)
-
         noise_plot_filename = os.path.join(output_dir, f"noise_comparison_{suffix}{timestamp}.png")
-        plt.savefig(noise_plot_filename, dpi=300, bbox_inches='tight')
-        print(f"✅ График сравнения шума сохранён в: {noise_plot_filename}")
-        plt.show()
+        plt.savefig(noise_plot_filename, dpi=200, bbox_inches="tight")
+        plt.close()
+        print(f"✅ График шума: {noise_plot_filename}")
 
 
-# ======================
-# 3. ОСНОВНАЯ ЛОГИКА
-# ======================
-print("🚀 Запуск генерации данных...")
-print("=" * 60)
+if __name__ == "__main__":
+    data_root = os.path.dirname(os.path.abspath(__file__))
+    no_noise_dir = os.path.join(data_root, "no_noise")
+    with_noise_dir = os.path.join(data_root, "with_noise")
 
-# ======================
-# ГЕНЕРАЦИЯ БЕЗ ШУМА
-# ======================
-print("\n[1/2] Генерация данных БЕЗ шума...")
-df_no_noise = generate_data(n_points=n_points, add_noise=False, seed=seed)
-save_and_visualize(df_no_noise, seed, "no_noise", suffix="no_noise_")
+    print("🚀 Запуск генерации данных...")
+    print("=" * 60)
 
-# ======================
-# ГЕНЕРАЦИЯ С ШУМОМ
-# ======================
-print("\n[2/2] Генерация данных С шумом (5%)...")
-df_with_noise = generate_data(n_points=n_points, add_noise=True, noise_std=noise_std, seed=seed)
-save_and_visualize(df_with_noise, seed, "with_noise", suffix="with_noise_")
+    calibrate_noise_sigma(noise_std, n_samples=1000, seed=seed)
 
-# ======================
-# СРАВНЕНИЕ СТАТИСТИК
-# ======================
-print("\n" + "=" * 60)
-print("📊 СРАВНЕНИЕ СТАТИСТИК:")
-print("=" * 60)
-print(f"\nБез шума:")
-print(f"  Среднее: {df_no_noise['critical_load_N_per_m'].mean() / 1e3:.2f} кН/м")
-print(f"  STD: {df_no_noise['critical_load_N_per_m'].std() / 1e3:.2f} кН/м")
+    print("\n[1/2] Генерация данных БЕЗ шума...")
+    df_no_noise = generate_data(n_points=n_points, add_noise=False, seed=seed)
+    save_and_visualize(df_no_noise, seed, no_noise_dir, suffix="no_noise_")
 
-print(f"\nС шумом:")
-print(f"  Среднее: {df_with_noise['critical_load_N_per_m'].mean() / 1e3:.2f} кН/м")
-print(f"  STD: {df_with_noise['critical_load_N_per_m'].std() / 1e3:.2f} кН/м")
+    print("\n[2/2] Генерация данных С шумом...")
+    df_with_noise = generate_data(n_points=n_points, add_noise=True, noise_std=noise_std, seed=seed)
+    save_and_visualize(df_with_noise, seed, with_noise_dir, suffix="with_noise_", add_noise_flag=True)
 
-# Вычисляем фактический уровень шума
-actual_noise = (df_with_noise['critical_load_N_per_m'].std() - df_no_noise['critical_load_N_per_m'].std()) / \
-               df_no_noise['critical_load_N_per_m'].mean() * 100
-print(f"\n  Фактический уровень шума: ~{actual_noise:.1f}%")
+    mean_clean = df_no_noise["critical_load_N_per_m"].mean() / 1e3
+    mean_noisy = df_with_noise["critical_load_N_per_m"].mean() / 1e3
+    diff_pct = abs(mean_noisy - mean_clean) / mean_clean * 100
 
-print("\n" + "=" * 60)
-print("🎉 Генерация данных завершена успешно!")
-print(f"📁 Папка с данными: data")
-print("   ├── no_noise/")
-print("   └── with_noise/")
-print("=" * 60)
+    print("\n" + "=" * 60)
+    print("📊 СРАВНЕНИЕ СРЕДНИХ (n=1000):")
+    print(f"  Без шума:  {mean_clean:.2f} кН/м")
+    print(f"  С шумом:   {mean_noisy:.2f} кН/м")
+    print(f"  Разница:   {diff_pct:.2f}%")
+    if diff_pct < 1.0:
+        print("  ✅ Разница < 1% — смещение среднего незначимо")
+    else:
+        print("  ⚠️  Разница >= 1% — проверьте параметры шума")
+
+    print("\n🎉 Генерация завершена")
