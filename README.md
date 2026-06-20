@@ -39,6 +39,9 @@ poetry install
 # 1. Сгенерировать датасет (1000 точек, с шумом и без)
 poetry run python data/generate_data.py
 
+# Дискретная сетка параметров (все технологически допустимые комбинации)
+poetry run python data/generate_data.py --discrete
+
 # 2. Сравнить суррогатные модели на начальной выборке (35 точек)
 poetry run python experiments/compare_models.py --n_seeds 10
 
@@ -50,6 +53,9 @@ poetry run python experiments/run_strategies.py \
     --strategy farthest_point \
     --kernels RBF Matern RationalQuadratic \
     --n_seeds 10 --noise_type with_noise
+
+# 5. Граничные точки в пуле кандидатов + дискретный режим
+poetry run python experiments/run_strategies.py --all --include_boundaries --discrete --n_seeds 10
 ```
 
 ---
@@ -78,6 +84,8 @@ bachelor_diploma_work/
 │   │   └── random_strategy.py
 │   └── utils/
 │       ├── data.py               # Загрузка и split данных
+│       ├── discrete_params.py    # Дискретные значения параметров
+│       ├── plot_style.py         # Единый стиль графиков (font_scale)
 │       ├── preprocessor.py       # StandardScaler (без утечки)
 │       ├── metrics.py            # RMSE, R², MAE
 │       ├── evaluator.py          # evaluate_fn для адаптивного цикла
@@ -95,14 +103,21 @@ bachelor_diploma_work/
 
 ```bash
 poetry run python data/generate_data.py
+
+# Дискретная сетка (все комбинации параметров)
+poetry run python data/generate_data.py --discrete
+
+# Увеличенный шрифт на графиках
+poetry run python data/generate_data.py --font_scale 1.5
 ```
 
 ### Что происходит
 
-- Генерируется **1000 точек** в пространстве параметров:
-  - `theta_base_deg` — угол укладки (0–45°)
-  - `total_thickness_m` — толщина (2–20 мм)
-  - `aspect_ratio` — соотношение сторон a/b (1.0–4.0)
+- По умолчанию генерируется **1000 точек** в пространстве параметров (непрерывная выборка).
+- С `--discrete` — **все комбинации** дискретных значений (сетка ~14 260 точек):
+  - `theta_base_deg` — угол укладки (0–45°, шаг 5°)
+  - `total_thickness_m` — толщина (2–20 мм, шаг 0.4 мм, N чётное)
+  - `aspect_ratio` — соотношение сторон a/b (1.0–4.0, шаг 0.1)
 - Укладка: симметричная `[θ, -θ, 90, 0]s` (8 слоёв), материал T300/934
 - Целевая переменная: `critical_load_N_per_m` (Н/м), в экспериментах используется в **кН/м**
 - Шум: `N(0, σ)`, где `σ = 0.05 × std(N_cr_clean)` по всей выборке (среднее шума ≈ 0)
@@ -161,6 +176,7 @@ poetry run python experiments/compare_models.py \
 | `--save_dir` | `results` | Папка для результатов |
 | `--rf_n_estimators` | 100 | Число деревьев RF |
 | `--rf_random_state` | 42 | Seed для RF |
+| `--font_scale` | 1.0 | Множитель размера шрифта на графиках |
 
 ### Результаты
 
@@ -191,6 +207,8 @@ poetry run python experiments/compare_models.py \
 2. Тест: **20 точек** (фиксированный split по seed)
 3. На **каждой итерации**:
    - Генерируется **1000 новых кандидатов** (LHS) в пределах `bounds` параметров
+   - С `--include_boundaries`: дополнительно 8 угловых точек и ~10 точек на гранях гиперкуба
+   - С `--discrete`: случайная выборка из дискретной сетки параметров
    - Стратегия выбирает лучшую точку по acquisition function
    - `y` вычисляется через **физическую модель** (`evaluate_point`), а не из пула
 4. Метрики RMSE/R² считаются в **кН/м** на тестовой выборке
@@ -222,6 +240,13 @@ poetry run python experiments/run_strategies.py \
 # Чистые данные, 50 итераций, подробный вывод
 poetry run python experiments/run_strategies.py \
     --all --noise_type no_noise --max_iter 50 --verbose
+
+# Чувствительность к шуму (1%, 3%, 5%, 10%) — автоматически при каждом запуске
+poetry run python experiments/run_strategies.py --all --n_seeds 10 \
+    --noise_levels 0.01 0.03 0.05 0.10
+
+# Увеличенный шрифт для вставки в диплом
+poetry run python experiments/run_strategies.py --all --n_seeds 10 --font_scale 1.5
 ```
 
 ### Аргументы `run_strategies.py`
@@ -241,6 +266,10 @@ poetry run python experiments/run_strategies.py \
 | `--n_seeds` | 1 | Число seed |
 | `--seed_start` | 42 | Начальный seed |
 | `--n_candidates` | 1000 | Кандидатов на итерацию |
+| `--noise_levels` | 0.01 0.03 0.05 0.10 | Уровни шума для эксперимента чувствительности |
+| `--include_boundaries` | false | Добавлять граничные/угловые точки в пул кандидатов |
+| `--discrete` | false | Дискретный режим параметров |
+| `--font_scale` | 1.0 | Множитель размера шрифта на графиках |
 | `--random_baseline` | false | Контроль со случайными выборками |
 | `--baseline_sizes` | 55 75 95 | Размеры для random baseline |
 | `--baseline_repeats` | 5 | Повторов random baseline |
@@ -253,9 +282,10 @@ poetry run python experiments/run_strategies.py \
 | Режим | Файлы |
 |-------|-------|
 | 1 seed | `strategies_comparison_*.txt`, `convergence_all_strategies.png` |
-| N seed | `strategies_multiseed_*.txt`, `strategies_rmse_boxplot_*.png`, `convergence_all_strategies.png` |
+| N seed | `strategies_multiseed_*.txt`, `strategies_rmse_boxplot_*.png`, `convergence_all_strategies.png`, `convergence_with_ci.png` |
 | Сравнение ядер | `kernels_comparison_*.txt`, `kernels_boxplot_*.png` |
 | Random baseline | раздел в отчёте с контрольными выборками |
+| Шум | `noise_comparison_table.txt`, `noise_sensitivity_*.txt`, `noise_sensitivity.png` |
 
 ---
 
@@ -297,8 +327,14 @@ GPR с ядрами: `RBF`, `Matern` (ν=1.5), `RationalQuadratic`. Исполь
 ### Адаптивная модель (`AdaptiveModel`)
 
 - Динамическая генерация кандидатов (не фиксированный пул)
+- Опционально: граничные точки (`include_boundaries`) и дискретная сетка (`discrete`)
 - Замер времени обучения (`total_time`, `time_per_iteration`)
 - Ранняя остановка при достижении `target_rmse`
+
+### Стиль графиков (`src/utils/plot_style.py`)
+
+- `apply_plot_style(font_scale)` — единые размеры шрифтов (мин. 12 pt) для всех элементов
+- Используется в `run_strategies.py`, `compare_models.py`, `generate_data.py`
 
 ---
 
@@ -312,6 +348,8 @@ GPR с ядрами: `RBF`, `Matern` (ν=1.5), `RationalQuadratic`. Исполь
 |--------|----------|
 | `comparison_models_boxplot.png` | Boxplot RMSE: Polynomial vs RF vs GPR |
 | `convergence_all_strategies.png` | Сходимость RMSE по итерациям для всех стратегий |
+| `convergence_with_ci.png` | Сходимость RMSE с доверительными интервалами ±1 std |
+| `noise_sensitivity.png` | RMSE vs уровень шума для каждой стратегии |
 | `strategies_rmse_boxplot_*.png` | Boxplot RMSE по seed для стратегий |
 | `kernels_boxplot_*.png` | Boxplot RMSE по ядрам GP |
 
