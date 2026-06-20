@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from datetime import datetime
@@ -21,57 +22,101 @@ from src.physics.buckling import (
     evaluate_point,
     get_feature_bounds,
 )
+from src.utils.discrete_params import get_all_discrete_combinations
+from src.utils.plot_style import apply_plot_style
 
-seed = 132
-n_points = 1000
-noise_std = 0.05
-add_noise = True
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Генерация синтетического датасета баклинга")
+    parser.add_argument("--n_points", type=int, default=1000, help="Число точек (для не-дискретного режима)")
+    parser.add_argument("--seed", type=int, default=132, help="Seed генерации")
+    parser.add_argument("--noise_std", type=float, default=0.05, help="Уровень шума (доля от std)")
+    parser.add_argument(
+        "--discrete",
+        action="store_true",
+        help="Генерировать все комбинации дискретных параметров (вместо LHS)",
+    )
+    parser.add_argument(
+        "--font_scale",
+        type=float,
+        default=1.0,
+        help="Множитель размера шрифта на графиках",
+    )
+    return parser.parse_args()
+
 
 theta_range = FEATURE_BOUNDS[0]
 thickness_range = FEATURE_BOUNDS[1]
 aspect_ratio_range = FEATURE_BOUNDS[2]
 
 
-def generate_data(n_points, add_noise=False, noise_std=0.05, seed=42):
-    """
-    Генерация данных с опциональным добавлением шума.
+def _build_row(theta_base, total_thickness, aspect_ratio, Q0):
+    """Одна строка датасета с чистой критической нагрузкой."""
+    a = aspect_ratio * B_WIDTH_M
+    angles = [theta_base, -theta_base, 90, 0, 0, 90, -theta_base, theta_base]
+    layer_thickness = total_thickness / len(angles)
+    thicknesses = [layer_thickness] * len(angles)
 
-    Шум: N(0, sigma), sigma = noise_std * std(N_cr_clean) по всей выборке.
-    """
+    D = calculate_D_matrix(angles, thicknesses, Q0)
+    N_cr = critical_buckling_load(D[0, 0], D[1, 1], D[0, 1], D[2, 2], a)
+
+    return {
+        "theta_base_deg": theta_base,
+        "total_thickness_m": total_thickness,
+        "aspect_ratio": aspect_ratio,
+        "a_m": a,
+        "D11_Nm": D[0, 0],
+        "D12_Nm": D[0, 1],
+        "D22_Nm": D[1, 1],
+        "D66_Nm": D[2, 2],
+        "critical_load_clean_N_per_m": N_cr,
+    }
+
+
+def generate_data_continuous(n_points, seed=42):
+    """Непрерывная генерация: случайная выборка в пространстве параметров."""
     rng = np.random.default_rng(seed)
     Q0 = calculate_Q_matrix()
-
     rows = []
-    clean_values = []
 
     for _ in range(n_points):
         theta_base = rng.uniform(*theta_range)
         total_thickness = rng.uniform(*thickness_range)
         aspect_ratio = rng.uniform(*aspect_ratio_range)
-        a = aspect_ratio * B_WIDTH_M
+        rows.append(_build_row(theta_base, total_thickness, aspect_ratio, Q0))
 
-        angles = [theta_base, -theta_base, 90, 0, 0, 90, -theta_base, theta_base]
-        layer_thickness = total_thickness / len(angles)
-        thicknesses = [layer_thickness] * len(angles)
+    return rows
 
-        D = calculate_D_matrix(angles, thicknesses, Q0)
-        N_cr = critical_buckling_load(D[0, 0], D[1, 1], D[0, 1], D[2, 2], a)
-        clean_values.append(N_cr)
 
-        rows.append({
-            "theta_base_deg": theta_base,
-            "total_thickness_m": total_thickness,
-            "aspect_ratio": aspect_ratio,
-            "a_m": a,
-            "D11_Nm": D[0, 0],
-            "D12_Nm": D[0, 1],
-            "D22_Nm": D[1, 1],
-            "D66_Nm": D[2, 2],
-            "critical_load_clean_N_per_m": N_cr,
-        })
+def generate_data_discrete():
+    """Дискретная генерация: все комбинации из дискретной сетки."""
+    Q0 = calculate_Q_matrix()
+    combos = get_all_discrete_combinations()
+    rows = []
+
+    for theta_base, total_thickness, aspect_ratio in combos:
+        rows.append(_build_row(theta_base, total_thickness, aspect_ratio, Q0))
+
+    return rows
+
+
+def generate_data(n_points, add_noise=False, noise_std=0.05, seed=42, discrete=False):
+    """
+    Генерация данных с опциональным добавлением шума.
+
+    Шум: N(0, sigma), sigma = noise_std * std(N_cr_clean) по всей выборке.
+    """
+    if discrete:
+        rows = generate_data_discrete()
+        print(f"  Дискретный режим: {len(rows)} комбинаций параметров")
+    else:
+        rows = generate_data_continuous(n_points, seed=seed)
+
+    clean_values = [row["critical_load_clean_N_per_m"] for row in rows]
+    rng = np.random.default_rng(seed)
 
     sigma = noise_std * float(np.std(clean_values))
-    noises = rng.normal(0, sigma, size=n_points)
+    noises = rng.normal(0, sigma, size=len(rows))
     print(f"  Sigma шума: {sigma:.2f} Н/м ({noise_std * 100:.0f}% от std чистых значений)")
     print(f"  Mean noise: {np.mean(noises):.4f} (должно быть ~0)")
 
@@ -86,7 +131,8 @@ def generate_data(n_points, add_noise=False, noise_std=0.05, seed=42):
     return pd.DataFrame(rows)
 
 
-def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
+def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, font_scale=1.0):
+    apply_plot_style(font_scale)
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -120,42 +166,37 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
 
     fig = plt.figure(figsize=(20, 12))
 
-    # 1. Нагрузка vs Толщина
     ax1 = fig.add_subplot(2, 3, 1)
     ax1.scatter(df['total_thickness_m'] * 1e3, df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='blue', s=50)
-    ax1.set_xlabel('Толщина пластины (мм)', fontsize=11)
-    ax1.set_ylabel('Критическая нагрузка (кН/м)', fontsize=11)
-    ax1.set_title('Зависимость критической нагрузки от толщины', fontsize=12)
+    ax1.set_xlabel('Толщина пластины (мм)')
+    ax1.set_ylabel('Критическая нагрузка (кН/м)')
+    ax1.set_title('Зависимость критической нагрузки от толщины')
     ax1.grid(True, alpha=0.3)
 
-    # 2. Нагрузка vs Угол укладки
     ax2 = fig.add_subplot(2, 3, 2)
     ax2.scatter(df['theta_base_deg'], df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='green', s=50)
-    ax2.set_xlabel('Базовый угол укладки (градусы)', fontsize=11)
-    ax2.set_ylabel('Критическая нагрузка (кН/м)', fontsize=11)
-    ax2.set_title('Зависимость критической нагрузки от угла укладки', fontsize=12)
+    ax2.set_xlabel('Базовый угол укладки (градусы)')
+    ax2.set_ylabel('Критическая нагрузка (кН/м)')
+    ax2.set_title('Зависимость критической нагрузки от угла укладки')
     ax2.grid(True, alpha=0.3)
 
-    # 3. Нагрузка vs Соотношение сторон
     ax3 = fig.add_subplot(2, 3, 3)
     ax3.scatter(df['aspect_ratio'], df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='red', s=50)
-    ax3.set_xlabel('Соотношение сторон (a/b)', fontsize=11)
-    ax3.set_ylabel('Критическая нагрузка (кН/м)', fontsize=11)
-    ax3.set_title('Зависимость критической нагрузки от соотношения сторон', fontsize=12)
+    ax3.set_xlabel('Соотношение сторон (a/b)')
+    ax3.set_ylabel('Критическая нагрузка (кН/м)')
+    ax3.set_title('Зависимость критической нагрузки от соотношения сторон')
     ax3.grid(True, alpha=0.3)
 
-    # 4. Гистограмма распределения нагрузки
     ax4 = fig.add_subplot(2, 3, 4)
     ax4.hist(df['critical_load_N_per_m'] / 1e3, bins=20, color='purple', alpha=0.7, edgecolor='black')
-    ax4.set_xlabel('Критическая нагрузка (кН/м)', fontsize=11)
-    ax4.set_ylabel('Частота', fontsize=11)
-    ax4.set_title('Распределение критической нагрузки', fontsize=12)
+    ax4.set_xlabel('Критическая нагрузка (кН/м)')
+    ax4.set_ylabel('Частота')
+    ax4.set_title('Распределение критической нагрузки')
     ax4.grid(True, alpha=0.3, axis='y')
 
-    # 5. 3D-график (толщина, угол, нагрузка)
     ax5 = fig.add_subplot(2, 3, 5, projection='3d')
     sc5 = ax5.scatter(df['total_thickness_m'] * 1e3,
                       df['theta_base_deg'],
@@ -164,13 +205,12 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
                       cmap=cm.viridis,
                       s=50,
                       alpha=0.8)
-    ax5.set_xlabel('Толщина (мм)', fontsize=10)
-    ax5.set_ylabel('Угол (град)', fontsize=10)
-    ax5.set_zlabel('Нагрузка (кН/м)', fontsize=10)
-    ax5.set_title('3D: Толщина × Угол × Нагрузка', fontsize=11)
+    ax5.set_xlabel('Толщина (мм)')
+    ax5.set_ylabel('Угол (град)')
+    ax5.set_zlabel('Нагрузка (кН/м)')
+    ax5.set_title('3D: Толщина × Угол × Нагрузка')
     plt.colorbar(sc5, ax=ax5, label='Нагрузка (кН/м)', shrink=0.6)
 
-    # 6. 3D-график (толщина, aspect_ratio, нагрузка)
     ax6 = fig.add_subplot(2, 3, 6, projection='3d')
     sc6 = ax6.scatter(df['total_thickness_m'] * 1e3,
                       df['aspect_ratio'],
@@ -179,10 +219,10 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
                       cmap=cm.plasma,
                       s=50,
                       alpha=0.8)
-    ax6.set_xlabel('Толщина (мм)', fontsize=10)
-    ax6.set_ylabel('Соотношение (a/b)', fontsize=10)
-    ax6.set_zlabel('Нагрузка (кН/м)', fontsize=10)
-    ax6.set_title('3D: Толщина × a/b × Нагрузка', fontsize=11)
+    ax6.set_xlabel('Толщина (мм)')
+    ax6.set_ylabel('Соотношение (a/b)')
+    ax6.set_zlabel('Нагрузка (кН/м)')
+    ax6.set_title('3D: Толщина × a/b × Нагрузка')
     plt.colorbar(sc6, ax=ax6, label='Нагрузка (кН/м)', shrink=0.6)
 
     plt.tight_layout()
@@ -212,29 +252,51 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False):
 
 
 if __name__ == "__main__":
+    args = parse_args()
     data_root = os.path.dirname(os.path.abspath(__file__))
     no_noise_dir = os.path.join(data_root, "no_noise")
     with_noise_dir = os.path.join(data_root, "with_noise")
 
     print("🚀 Запуск генерации данных...")
     print("=" * 60)
+    if args.discrete:
+        print("Режим: дискретные параметры (полная сетка)")
+    else:
+        print(f"Режим: непрерывная выборка, n={args.n_points}")
 
-    calibrate_noise_sigma(noise_std, n_samples=1000, seed=seed)
+    calibrate_noise_sigma(args.noise_std, n_samples=1000, seed=args.seed)
 
     print("\n[1/2] Генерация данных БЕЗ шума...")
-    df_no_noise = generate_data(n_points=n_points, add_noise=False, seed=seed)
-    save_and_visualize(df_no_noise, seed, no_noise_dir, suffix="no_noise_")
+    df_no_noise = generate_data(
+        n_points=args.n_points,
+        add_noise=False,
+        seed=args.seed,
+        discrete=args.discrete,
+    )
+    save_and_visualize(
+        df_no_noise, args.seed, no_noise_dir,
+        suffix="no_noise_", font_scale=args.font_scale,
+    )
 
     print("\n[2/2] Генерация данных С шумом...")
-    df_with_noise = generate_data(n_points=n_points, add_noise=True, noise_std=noise_std, seed=seed)
-    save_and_visualize(df_with_noise, seed, with_noise_dir, suffix="with_noise_", add_noise_flag=True)
+    df_with_noise = generate_data(
+        n_points=args.n_points,
+        add_noise=True,
+        noise_std=args.noise_std,
+        seed=args.seed,
+        discrete=args.discrete,
+    )
+    save_and_visualize(
+        df_with_noise, args.seed, with_noise_dir,
+        suffix="with_noise_", add_noise_flag=True, font_scale=args.font_scale,
+    )
 
     mean_clean = df_no_noise["critical_load_N_per_m"].mean() / 1e3
     mean_noisy = df_with_noise["critical_load_N_per_m"].mean() / 1e3
     diff_pct = abs(mean_noisy - mean_clean) / mean_clean * 100
 
     print("\n" + "=" * 60)
-    print("📊 СРАВНЕНИЕ СРЕДНИХ (n=1000):")
+    print("📊 СРАВНЕНИЕ СРЕДНИХ:")
     print(f"  Без шума:  {mean_clean:.2f} кН/м")
     print(f"  С шумом:   {mean_noisy:.2f} кН/м")
     print(f"  Разница:   {diff_pct:.2f}%")

@@ -4,6 +4,7 @@
 точку по acquisition function; y вычисляется через физическую модель.
 """
 
+import itertools
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -17,6 +18,7 @@ from sklearn.gaussian_process.kernels import (
     RationalQuadratic,
 )
 
+from src.utils.discrete_params import get_all_discrete_combinations
 from src.utils.metrics import calculate_rmse, calculate_r2, calculate_mae
 
 
@@ -32,6 +34,8 @@ class AdaptiveModel:
         scaler_y=None,
         convergence_patience=3,
         n_candidates=1000,
+        include_boundaries=False,
+        discrete=False,
     ):
         self.strategy = strategy
         self.kernel = kernel
@@ -40,6 +44,8 @@ class AdaptiveModel:
         self.scaler_y = scaler_y
         self.convergence_patience = convergence_patience
         self.n_candidates = n_candidates
+        self.include_boundaries = include_boundaries
+        self.discrete = discrete
 
         self.model = None
         self.rmse_history = []
@@ -59,7 +65,50 @@ class AdaptiveModel:
         raise ValueError(f"Неизвестное ядро: {self.kernel}")
 
     @staticmethod
-    def _sample_candidates(
+    def _get_corner_points(bounds: List[Tuple[float, float]]) -> np.ndarray:
+        """Все 8 угловых точек гиперкуба (min/max для каждого параметра)."""
+        corner_values = [[b[0], b[1]] for b in bounds]
+        return np.array(list(itertools.product(*corner_values)), dtype=float)
+
+    @staticmethod
+    def _get_boundary_face_points(
+        bounds: List[Tuple[float, float]],
+        n_faces: int,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Точки на гранях: один параметр на границе, остальные случайно."""
+        d = len(bounds)
+        points = []
+        for _ in range(n_faces):
+            dim = int(rng.integers(0, d))
+            boundary_val = bounds[dim][int(rng.integers(0, 2))]
+            point = []
+            for j in range(d):
+                if j == dim:
+                    point.append(boundary_val)
+                else:
+                    point.append(rng.uniform(bounds[j][0], bounds[j][1]))
+            points.append(point)
+        return np.array(points, dtype=float)
+
+    @staticmethod
+    def _remove_duplicates(
+        points: np.ndarray,
+        bounds: List[Tuple[float, float]],
+        tol: float = 1e-9,
+    ) -> np.ndarray:
+        """Удаляет дубликаты с учётом масштаба каждого параметра."""
+        if len(points) == 0:
+            return points
+
+        scales = np.array([max(b[1] - b[0], tol) for b in bounds])
+        normalized = points / scales
+        rounded = np.round(normalized / tol)
+        _, unique_idx = np.unique(rounded, axis=0, return_index=True)
+        return points[np.sort(unique_idx)]
+
+    @staticmethod
+    def _sample_lhs(
         bounds: List[Tuple[float, float]],
         n_candidates: int,
         rng: np.random.Generator,
@@ -71,6 +120,45 @@ class AdaptiveModel:
         sampler = qmc.LatinHypercube(d=d, seed=int(rng.integers(0, 2**31)))
         unit = sampler.random(n=n_candidates)
         return qmc.scale(unit, lows, highs)
+
+    @staticmethod
+    def _sample_candidates_discrete(
+        n_candidates: int,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Случайная выборка из дискретной сетки параметров."""
+        all_combos = get_all_discrete_combinations()
+        n_total = len(all_combos)
+        n_sample = min(n_candidates, n_total)
+        indices = rng.choice(n_total, size=n_sample, replace=False)
+        return all_combos[indices]
+
+    @staticmethod
+    def _sample_candidates(
+        bounds: List[Tuple[float, float]],
+        n_candidates: int,
+        rng: np.random.Generator,
+        include_boundaries: bool = False,
+        discrete: bool = False,
+    ) -> np.ndarray:
+        """
+        Генерирует пул кандидатов.
+
+        При discrete=True — случайная выборка из дискретной сетки.
+        При include_boundaries=True — LHS + 8 углов + ~10 точек на гранях, без дубликатов.
+        """
+        if discrete:
+            return AdaptiveModel._sample_candidates_discrete(n_candidates, rng)
+
+        lhs = AdaptiveModel._sample_lhs(bounds, n_candidates, rng)
+
+        if not include_boundaries:
+            return lhs
+
+        corners = AdaptiveModel._get_corner_points(bounds)
+        faces = AdaptiveModel._get_boundary_face_points(bounds, 10, rng)
+        combined = np.vstack([lhs, corners, faces])
+        return AdaptiveModel._remove_duplicates(combined, bounds)
 
     def train(
         self,
@@ -116,6 +204,8 @@ class AdaptiveModel:
             print(f"  Тестовый набор: {len(X_test)} точек")
             print(f"  Стратегия: {self.strategy.__class__.__name__}")
             print(f"  Ядро: {self.kernel}")
+            print(f"  Граничные точки: {self.include_boundaries}")
+            print(f"  Дискретный режим: {self.discrete}")
             if self.target_rmse is not None:
                 print(f"  Target RMSE: {self.target_rmse:.2f} кН/м")
             print("-" * 50)
@@ -180,7 +270,13 @@ class AdaptiveModel:
             if iteration + 1 >= self.max_iterations:
                 break
 
-            X_cand_raw = self._sample_candidates(bounds, self.n_candidates, rng)
+            X_cand_raw = self._sample_candidates(
+                bounds,
+                self.n_candidates,
+                rng,
+                include_boundaries=self.include_boundaries,
+                discrete=self.discrete,
+            )
             X_cand = scaler_X.transform(X_cand_raw)
 
             next_idx = self.strategy.select_next_point(self.model, X_cand)

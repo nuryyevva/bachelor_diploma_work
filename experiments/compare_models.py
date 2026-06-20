@@ -29,6 +29,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from src.models.non_adaptive import NonAdaptiveModel
 from src.utils.data import load_and_split_data, find_latest_data_file
 from src.utils.metrics import calculate_rmse, calculate_r2
+from src.utils.plot_style import apply_plot_style
 from src.utils.preprocessor import DataPreprocessor
 
 MODEL_NAMES = [
@@ -62,6 +63,12 @@ def parse_args():
     parser.add_argument("--save_dir", type=str, default="results")
     parser.add_argument("--rf_n_estimators", type=int, default=100)
     parser.add_argument("--rf_random_state", type=int, default=42)
+    parser.add_argument(
+        "--font_scale",
+        type=float,
+        default=1.0,
+        help="Множитель размера шрифта на графиках",
+    )
     return parser.parse_args()
 
 
@@ -232,9 +239,10 @@ def save_report(
     return report_path
 
 
-def plot_boxplot(aggregated: Dict[str, Dict], save_dir: str) -> str:
+def plot_boxplot(aggregated: Dict[str, Dict], save_dir: str, font_scale: float = 1.0) -> str:
     import matplotlib.pyplot as plt
 
+    apply_plot_style(font_scale)
     os.makedirs(save_dir, exist_ok=True)
     sorted_names = sorted(MODEL_NAMES, key=lambda n: aggregated[n]["mean_rmse"])
     labels = [MODEL_LABELS[n] for n in sorted_names]
@@ -242,12 +250,9 @@ def plot_boxplot(aggregated: Dict[str, Dict], save_dir: str) -> str:
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.boxplot(data, labels=labels, patch_artist=True)
-    ax.set_ylabel("RMSE (кН/м)", fontsize=12)
-    ax.set_xlabel("Модель", fontsize=12)
-    ax.set_title(
-        "Сравнение суррогатных моделей на начальной выборке (35 точек LHS)",
-        fontsize=13,
-    )
+    ax.set_ylabel("RMSE (кН/м)")
+    ax.set_xlabel("Модель")
+    ax.set_title("Сравнение суррогатных моделей на начальной выборке (35 точек LHS)")
     ax.grid(True, alpha=0.3, axis="y")
     plt.xticks(rotation=15, ha="right")
 
@@ -293,7 +298,7 @@ def main():
     print_summary_table(aggregated, seeds)
 
     report_path = save_report(aggregated, seeds, args.save_dir, args.noise_type)
-    plot_path = plot_boxplot(aggregated, args.save_dir)
+    plot_path = plot_boxplot(aggregated, args.save_dir, font_scale=args.font_scale)
 
     print(f"\n✅ Отчёт сохранён: {report_path}")
     print(f"✅ Boxplot сохранён: {plot_path}")

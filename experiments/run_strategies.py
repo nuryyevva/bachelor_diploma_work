@@ -31,7 +31,7 @@ import random
 import time
 import argparse
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.utils.data import load_and_split_data, find_latest_data_file
 from src.utils.evaluator import make_evaluate_fn, get_experiment_bounds
 from src.utils.metrics import calculate_rmse, calculate_r2, calculate_mae
+from src.utils.plot_style import apply_plot_style
 from src.utils.preprocessor import DataPreprocessor
 from src.models.non_adaptive import NonAdaptiveModel
 from src.models.adaptive import AdaptiveModel
@@ -198,6 +199,29 @@ def parse_args():
         default=1000,
         help='Число генерируемых кандидатов на итерацию адаптивного обучения (по умолчанию: 1000)'
     )
+    parser.add_argument(
+        '--noise_levels',
+        nargs='+',
+        type=float,
+        default=[0.01, 0.03, 0.05, 0.10],
+        help='Уровни шума для эксперимента чувствительности (доли, по умолчанию: 0.01 0.03 0.05 0.10)'
+    )
+    parser.add_argument(
+        '--include_boundaries',
+        action='store_true',
+        help='Добавлять граничные и угловые точки в пул кандидатов (по умолчанию: False)'
+    )
+    parser.add_argument(
+        '--discrete',
+        action='store_true',
+        help='Дискретный режим параметров (по умолчанию: False)'
+    )
+    parser.add_argument(
+        '--font_scale',
+        type=float,
+        default=1.0,
+        help='Множитель размера шрифта на графиках (по умолчанию: 1.0)'
+    )
 
     return parser.parse_args()
 
@@ -213,7 +237,15 @@ def set_global_seed(seed: int):
     random.seed(seed)
 
 
-def prepare_data(args: argparse.Namespace, data_path: str, seed: int, verbose: bool = False) -> Dict:
+def prepare_data(
+    args: argparse.Namespace,
+    data_path: str,
+    seed: int,
+    verbose: bool = False,
+    noise_type: Optional[str] = None,
+    noise_level: float = 0.05,
+    force_add_noise: Optional[bool] = None,
+) -> Dict:
     """Загрузка, разбиение и предобработка данных для одного seed."""
     set_global_seed(seed)
 
@@ -249,8 +281,14 @@ def prepare_data(args: argparse.Namespace, data_path: str, seed: int, verbose: b
     data['X_test'] = X_test
     data['y_test_original'] = preprocessor.get_original_y_test(y_test)
     data['bounds'] = get_experiment_bounds(use_all_features=True)
+    effective_noise_type = noise_type if noise_type is not None else args.noise_type
+    if force_add_noise is not None:
+        add_noise = force_add_noise
+    else:
+        add_noise = effective_noise_type == 'with_noise'
     data['evaluate_fn'] = make_evaluate_fn(
-        add_noise=(args.noise_type == 'with_noise'),
+        add_noise=add_noise,
+        noise_level=noise_level,
         seed=seed,
     )
 
@@ -292,6 +330,8 @@ def run_single_strategy(
         scaler_y=preprocessor.scaler_y,
         convergence_patience=2,
         n_candidates=config.n_candidates,
+        include_boundaries=config.include_boundaries,
+        discrete=config.discrete,
     )
 
     if config.verbose:
@@ -537,6 +577,7 @@ def compare_kernels(
     seeds: List[int],
     save_dir: str,
     noise_type: str,
+    font_scale: float = 1.0,
 ):
     """Таблица сравнения ядер для каждой стратегии."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -607,17 +648,16 @@ def compare_kernels(
     try:
         import matplotlib.pyplot as plt
 
+        apply_plot_style(font_scale)
+
         for strategy_name, kernel_stats in kernel_aggregated.items():
             fig, ax = plt.subplots(figsize=(8, 5))
             available = [k for k in kernels if k in kernel_stats]
             rmse_data = [kernel_stats[k]['rmse_values'] for k in available]
             ax.boxplot(rmse_data, labels=available, patch_artist=True)
-            ax.set_ylabel('RMSE (кН/м)', fontsize=12)
-            ax.set_xlabel('Ядро', fontsize=12)
-            ax.set_title(
-                f'Сравнение ядер: {strategy_name} ({len(seeds)} seed)',
-                fontsize=13,
-            )
+            ax.set_ylabel('RMSE (кН/м)')
+            ax.set_xlabel('Ядро')
+            ax.set_title(f'Сравнение ядер: {strategy_name} ({len(seeds)} seed)')
             ax.grid(True, alpha=0.3, axis='y')
 
             plot_path = os.path.join(
@@ -640,7 +680,10 @@ def compare_multi_seed(
     save_dir: str,
     seeds: List[int],
     n_initial: int = 35,
-    kernel = ""
+    kernel: str = "",
+    include_boundaries: bool = False,
+    discrete: bool = False,
+    font_scale: float = 1.0,
 ):
     """Сравнение стратегий по нескольким seed: таблицы, boxplot, время."""
     strategy_names = [k for k in aggregated.keys() if not k.startswith('_')]
@@ -653,21 +696,25 @@ def compare_multi_seed(
     print(f"📊 СРАВНЕНИЕ ПО {len(seeds)} SEED: {seeds[0]}..{seeds[-1]}")
     print("=" * 100)
 
+    na = aggregated['_non_adaptive']
+    baseline_rmse = na['mean_rmse']
+
     print(
         f"\n{'Стратегия':<25} | {'Средний RMSE':<14} | {'Стд. RMSE':<12} | "
-        f"{'Сред. R²':<10} | {'Сред. итер.':<12}"
+        f"{'Сред. R²':<10} | {'Сред. итер.':<12} | {'Улучшение, %':<14}"
     )
-    print("-" * 100)
+    print("-" * 115)
     for name in sorted_names:
         agg = aggregated[name]
+        improvement = (baseline_rmse - agg['mean_rmse']) / baseline_rmse * 100
         print(
             f"{name:<25} | {agg['mean_rmse']:>10.2f} кН/м | "
             f"{agg['std_rmse']:>8.2f}   | {agg['mean_r2']:>8.4f} | "
-            f"{agg['mean_iterations']:>8.1f} ± {agg['std_iterations']:.1f}"
+            f"{agg['mean_iterations']:>8.1f} ± {agg['std_iterations']:.1f} | "
+            f"{improvement:>10.2f}%"
         )
 
-    na = aggregated['_non_adaptive']
-    print("-" * 100)
+    print("-" * 115)
     print(
         f"{'Неадаптивная (LHS)':<25} | {na['mean_rmse']:>10.2f} кН/м | "
         f"{na['std_rmse']:>8.2f}   | {'-':>8} | {'-':>12}"
@@ -705,19 +752,25 @@ def compare_multi_seed(
         f.write(f"СРАВНЕНИЕ СТРАТЕГИЙ ПО {len(seeds)} SEED\n")
         f.write(f"Seeds: {seeds}\n")
         f.write(f"Ядро: {kernel}\n")
+        f.write(f"Граничные точки в кандидатах: {'да' if include_boundaries else 'нет'}\n")
+        f.write(f"Дискретный режим: {'да' if discrete else 'нет'}\n")
         f.write("=" * 100 + "\n\n")
 
-        f.write(f"{'Стратегия':<25} | {'Средний RMSE':<14} | {'Стд. RMSE':<12} | "
-                f"{'Сред. R²':<10} | {'Сред. итер.':<12}\n")
-        f.write("-" * 100 + "\n")
+        f.write(
+            f"{'Стратегия':<25} | {'Средний RMSE':<14} | {'Стд. RMSE':<12} | "
+            f"{'Сред. R²':<10} | {'Сред. итер.':<12} | {'Улучшение от baseline, %':<24}\n"
+        )
+        f.write("-" * 115 + "\n")
         for name in sorted_names:
             agg = aggregated[name]
+            improvement = (baseline_rmse - agg['mean_rmse']) / baseline_rmse * 100
             f.write(
                 f"{name:<25} | {agg['mean_rmse']:>10.2f} кН/м | "
                 f"{agg['std_rmse']:>8.2f}   | {agg['mean_r2']:>8.4f} | "
-                f"{agg['mean_iterations']:>8.1f} ± {agg['std_iterations']:.1f}\n"
+                f"{agg['mean_iterations']:>8.1f} ± {agg['std_iterations']:.1f} | "
+                f"{improvement:>18.2f}%\n"
             )
-        f.write("-" * 100 + "\n")
+        f.write("-" * 115 + "\n")
         f.write(
             f"{'Неадаптивная (LHS)':<25} | {na['mean_rmse']:>10.2f} кН/м | "
             f"{na['std_rmse']:>8.2f}   | {'-':>8} | {'-':>12}\n"
@@ -747,6 +800,8 @@ def compare_multi_seed(
     try:
         import matplotlib.pyplot as plt
 
+        apply_plot_style(font_scale)
+
         fig, ax = plt.subplots(figsize=(12, 6))
         rmse_data = [aggregated[name]['rmse_values'] for name in sorted_names]
         ax.boxplot(rmse_data, labels=sorted_names, patch_artist=True)
@@ -755,11 +810,11 @@ def compare_multi_seed(
             color='red',
             linestyle='--',
             linewidth=2,
-            label=f"Неадаптивная (LHS): {na['mean_rmse']:.0f} кН/м",
+            label=f"Неадаптивная (baseline): {na['mean_rmse']:.0f} кН/м",
         )
-        ax.set_ylabel('RMSE (кН/м)', fontsize=12)
-        ax.set_xlabel('Стратегия', fontsize=12)
-        ax.set_title(f'Распределение RMSE по {len(seeds)} seed', fontsize=14)
+        ax.set_ylabel('RMSE (кН/м)')
+        ax.set_xlabel('Стратегия')
+        ax.set_title(f'Распределение RMSE по {len(seeds)} seed')
         ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3, axis='y')
         plt.xticks(rotation=25, ha='right')
@@ -781,6 +836,14 @@ def compare_multi_seed(
         save_dir=save_dir,
         per_seed_results=per_seed_results,
         title=f'Сходимость RMSE по итерациям (среднее по {len(seeds)} seed)',
+        font_scale=font_scale,
+    )
+    plot_convergence_with_ci(
+        per_seed_results=per_seed_results,
+        non_adaptive_rmse=aggregated['_non_adaptive']['mean_rmse'],
+        save_dir=save_dir,
+        n_seeds=len(seeds),
+        font_scale=font_scale,
     )
 
     best = sorted_names[0]
@@ -802,12 +865,101 @@ def _mean_rmse_history(histories: List[List[float]]) -> np.ndarray:
     return np.nanmean(padded, axis=0)
 
 
+def _mean_std_rmse_history(histories: List[List[float]]) -> Tuple[np.ndarray, np.ndarray]:
+    """Среднее и std rmse_history по seed для каждой итерации."""
+    if not histories:
+        return np.array([]), np.array([])
+    max_len = max(len(h) for h in histories)
+    padded = np.full((len(histories), max_len), np.nan)
+    for i, history in enumerate(histories):
+        padded[i, : len(history)] = history
+    return np.nanmean(padded, axis=0), np.nanstd(padded, axis=0)
+
+
+def plot_convergence_with_ci(
+    per_seed_results: List[Dict],
+    non_adaptive_rmse: float,
+    save_dir: str,
+    n_seeds: int,
+    font_scale: float = 1.0,
+) -> Optional[str]:
+    """График сходимости RMSE с доверительными интервалами ±1 std и линией baseline."""
+    try:
+        import matplotlib.pyplot as plt
+
+        apply_plot_style(font_scale)
+        os.makedirs(save_dir, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        strategy_names = [
+            r['strategy_name'] for r in per_seed_results[0]['all_results']
+        ]
+        histories_by_strategy = {name: [] for name in strategy_names}
+        for run in per_seed_results:
+            for res in run['all_results']:
+                histories_by_strategy[res['strategy_name']].append(res['rmse_history'])
+
+        sorted_names = sorted(
+            strategy_names,
+            key=lambda n: _mean_std_rmse_history(histories_by_strategy[n])[0][-1],
+        )
+        colors = plt.cm.tab10(np.linspace(0, 1, len(sorted_names)))
+
+        for i, name in enumerate(sorted_names):
+            mean_hist, std_hist = _mean_std_rmse_history(histories_by_strategy[name])
+            iterations = np.arange(1, len(mean_hist) + 1)
+            ax.plot(
+                iterations,
+                mean_hist,
+                marker='o',
+                label=name,
+                color=colors[i],
+                linewidth=2,
+                markersize=4,
+            )
+            ax.fill_between(
+                iterations,
+                mean_hist - std_hist,
+                mean_hist + std_hist,
+                color=colors[i],
+                alpha=0.2,
+            )
+
+        ax.axhline(
+            y=non_adaptive_rmse,
+            color='red',
+            linestyle='--',
+            linewidth=2,
+            label=f'Неадаптивная (baseline): {non_adaptive_rmse:.2f} кН/м',
+        )
+
+        ax.set_xlabel('Адаптивная итерация')
+        ax.set_ylabel('RMSE (кН/м)')
+        ax.set_title(
+            f'Сходимость RMSE с доверительными интервалами (±1 std, {n_seeds} seed)'
+        )
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        plot_path = os.path.join(save_dir, 'convergence_with_ci.png')
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        print(f"✅ График сходимости с CI сохранён: {plot_path}")
+        return plot_path
+
+    except Exception as e:
+        print(f"⚠️ Не удалось создать график сходимости с CI: {e}")
+        return None
+
+
 def plot_convergence_all_strategies(
     all_results: List[Dict],
     non_adaptive_rmse: float,
     save_dir: str,
     per_seed_results: Optional[List[Dict]] = None,
     title: str = "Сходимость RMSE по итерациям",
+    font_scale: float = 1.0,
 ) -> Optional[str]:
     """
     Строит график RMSE vs номер итерации для всех стратегий + baseline.
@@ -817,6 +969,7 @@ def plot_convergence_all_strategies(
     try:
         import matplotlib.pyplot as plt
 
+        apply_plot_style(font_scale)
         os.makedirs(save_dir, exist_ok=True)
         fig, ax = plt.subplots(figsize=(12, 6))
 
@@ -861,13 +1014,13 @@ def plot_convergence_all_strategies(
             color='red',
             linestyle='--',
             linewidth=2,
-            label=f'Неадаптивная (LHS): {non_adaptive_rmse:.2f} кН/м',
+            label=f'Неадаптивная (baseline): {non_adaptive_rmse:.2f} кН/м',
         )
 
-        ax.set_xlabel('Номер итерации', fontsize=12)
-        ax.set_ylabel('RMSE (кН/м)', fontsize=12)
-        ax.set_title(title, fontsize=14)
-        ax.legend(loc='upper right', fontsize=9)
+        ax.set_xlabel('Адаптивная итерация')
+        ax.set_ylabel('RMSE (кН/м)')
+        ax.set_title(title)
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
 
         plot_path = os.path.join(save_dir, 'convergence_all_strategies.png')
@@ -882,6 +1035,216 @@ def plot_convergence_all_strategies(
         return None
 
 
+def run_strategies_mean_rmse(
+    args: argparse.Namespace,
+    strategies_to_run: List[str],
+    seeds: List[int],
+    kernel: str,
+    data_path: str,
+    noise_type: str,
+    noise_level: float = 0.05,
+    force_add_noise: Optional[bool] = None,
+    verbose_label: str = "",
+) -> Dict[str, float]:
+    """Средний final_rmse по seed для каждой стратегии при заданной конфигурации шума."""
+    strategy_rmse: Dict[str, List[float]] = {name: [] for name in strategies_to_run}
+
+    if verbose_label:
+        print(f"\n--- {verbose_label} ---")
+
+    for seed in seeds:
+        data, preprocessor = prepare_data(
+            args,
+            data_path,
+            seed,
+            verbose=False,
+            noise_type=noise_type,
+            noise_level=noise_level,
+            force_add_noise=force_add_noise,
+        )
+
+        non_adaptive_model = NonAdaptiveModel(kernel=kernel, scaler_y=preprocessor.scaler_y)
+        non_adaptive_model.train(data['X_initial'], data['y_initial'])
+        y_pred_na = non_adaptive_model.predict(data['X_test'])
+        non_adaptive_rmse = calculate_rmse(y_pred_na, data['y_test_original'])
+
+        for strategy_name in strategies_to_run:
+            result = run_single_strategy(
+                strategy_name=strategy_name,
+                data=data,
+                preprocessor=preprocessor,
+                non_adaptive_rmse=non_adaptive_rmse,
+                config=args,
+                seed=seed,
+                kernel=kernel,
+            )
+            strategy_rmse[strategy_name].append(result['final_rmse'])
+
+    return {name: float(np.mean(values)) for name, values in strategy_rmse.items()}
+
+
+def save_noise_comparison_table(
+    clean_rmse: Dict[str, float],
+    noisy_rmse: Dict[str, float],
+    save_dir: str,
+    seeds: List[int],
+    kernel: str,
+):
+    """Таблица сравнения RMSE на чистых и зашумлённых данных (шум 5%)."""
+    os.makedirs(save_dir, exist_ok=True)
+    report_path = os.path.join(save_dir, 'noise_comparison_table.txt')
+
+    sorted_names = sorted(clean_rmse.keys(), key=lambda n: clean_rmse[n])
+
+    print("\n" + "=" * 90)
+    print("📊 СРАВНЕНИЕ: ЧИСТЫЕ vs ЗАШУМЛЁННЫЕ ДАННЫЕ (шум 5%)")
+    print("=" * 90)
+    print(
+        f"\n{'Стратегия':<25} | {'RMSE (чистые)':<16} | "
+        f"{'RMSE (шум 5%)':<16} | {'Рост RMSE, %':<14}"
+    )
+    print("-" * 90)
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write("СРАВНЕНИЕ ЧИСТЫХ И ЗАШУМЛЁННЫХ ДАННЫХ\n")
+        f.write(f"Seeds: {seeds}\n")
+        f.write(f"Ядро: {kernel}\n")
+        f.write(f"Шум: 5% от std чистых N_cr\n\n")
+        f.write(
+            f"{'Стратегия':<25} | {'RMSE (чистые)':<16} | "
+            f"{'RMSE (шум 5%)':<16} | {'Рост RMSE, %':<14}\n"
+        )
+        f.write("-" * 90 + "\n")
+
+        for name in sorted_names:
+            clean = clean_rmse[name]
+            noisy = noisy_rmse[name]
+            growth = (noisy - clean) / clean * 100 if clean > 0 else 0.0
+            line = (
+                f"{name:<25} | {clean:>12.2f} кН/м | "
+                f"{noisy:>12.2f} кН/м | {growth:>10.2f}%"
+            )
+            print(line)
+            f.write(line + "\n")
+
+        f.write("=" * 90 + "\n")
+
+    print("=" * 90)
+    print(f"✅ Таблица сравнения шума сохранена: {report_path}")
+    return report_path
+
+
+def run_noise_sensitivity_experiment(
+    args: argparse.Namespace,
+    strategies_to_run: List[str],
+    seeds: List[int],
+    kernel: str,
+    save_dir: str,
+):
+    """Эксперимент чувствительности к разным уровням шума для всех стратегий."""
+    noise_levels = args.noise_levels
+    data_path = find_latest_data_file(data_dir=args.data_dir, noise_type='no_noise')
+
+    print("\n" + "=" * 80)
+    print("📊 ЭКСПЕРИМЕНТ ЧУВСТВИТЕЛЬНОСТИ К ШУМУ")
+    print(f"Уровни шума: {[f'{l * 100:.0f}%' for l in noise_levels]}")
+    print("=" * 80)
+
+    sensitivity: Dict[str, Dict[float, float]] = {s: {} for s in strategies_to_run}
+
+    for level in noise_levels:
+        level_results = run_strategies_mean_rmse(
+            args=args,
+            strategies_to_run=strategies_to_run,
+            seeds=seeds,
+            kernel=kernel,
+            data_path=data_path,
+            noise_type='no_noise',
+            noise_level=level,
+            force_add_noise=True,
+            verbose_label=f"Уровень шума: {level * 100:.0f}%",
+        )
+        for strategy_name, rmse in level_results.items():
+            sensitivity[strategy_name][level] = rmse
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(save_dir, exist_ok=True)
+    report_path = os.path.join(save_dir, f"noise_sensitivity_{timestamp}.txt")
+
+    header_levels = [f"{l * 100:.0f}%" for l in noise_levels]
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write("ЧУВСТВИТЕЛЬНОСТЬ СТРАТЕГИЙ К УРОВНЮ ШУМА\n")
+        f.write(f"Seeds: {seeds}\n")
+        f.write(f"Ядро: {kernel}\n")
+        f.write(f"Данные: no_noise (шум только в evaluate_fn)\n\n")
+
+        col_header = " | ".join([f"{'Стратегия':<25}"] + [f"RMSE {h:>8}" for h in header_levels])
+        f.write(col_header + "\n")
+        f.write("-" * len(col_header) + "\n")
+
+        for strategy_name in sorted(sensitivity.keys()):
+            values = [f"{sensitivity[strategy_name][l]:>10.2f}" for l in noise_levels]
+            f.write(f"{strategy_name:<25} | " + " | ".join(values) + "\n")
+
+    print(f"✅ Отчёт чувствительности сохранён: {report_path}")
+
+    plot_noise_sensitivity(
+        sensitivity=sensitivity,
+        noise_levels=noise_levels,
+        save_dir=save_dir,
+        font_scale=args.font_scale,
+    )
+
+    return sensitivity, report_path
+
+
+def plot_noise_sensitivity(
+    sensitivity: Dict[str, Dict[float, float]],
+    noise_levels: List[float],
+    save_dir: str,
+    font_scale: float = 1.0,
+):
+    """Визуализация RMSE vs уровень шума для каждой стратегии."""
+    try:
+        import matplotlib.pyplot as plt
+
+        apply_plot_style(font_scale)
+        os.makedirs(save_dir, exist_ok=True)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        noise_pct = [l * 100 for l in noise_levels]
+        colors = plt.cm.tab10(np.linspace(0, 1, len(sensitivity)))
+
+        for i, (strategy_name, level_map) in enumerate(sorted(sensitivity.items())):
+            rmse_values = [level_map[l] for l in noise_levels]
+            ax.plot(
+                noise_pct,
+                rmse_values,
+                marker='o',
+                label=strategy_name,
+                color=colors[i],
+                linewidth=2,
+                markersize=6,
+            )
+
+        ax.set_xlabel('Уровень шума, %')
+        ax.set_ylabel('RMSE (кН/м)')
+        ax.set_title('Чувствительность стратегий к уровню шума')
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+
+        plot_path = os.path.join(save_dir, 'noise_sensitivity.png')
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        print(f"✅ График чувствительности к шуму сохранён: {plot_path}")
+        return plot_path
+
+    except Exception as e:
+        print(f"⚠️ Не удалось создать график чувствительности: {e}")
+        return None
+
+
 def compare_strategies(
     all_results: List[Dict],
     non_adaptive_rmse: float,
@@ -889,6 +1252,7 @@ def compare_strategies(
     random_baseline: Optional[Dict[int, Dict[str, float]]] = None,
     n_initial: int = 35,
     non_adaptive_time: Optional[float] = None,
+    font_scale: float = 1.0,
 ):
     """Сравнение результатов всех стратегий и сохранение."""
 
@@ -1065,6 +1429,7 @@ def compare_strategies(
         all_results=sorted_results,
         non_adaptive_rmse=non_adaptive_rmse,
         save_dir=save_dir,
+        font_scale=font_scale,
     )
 
     return sorted_results
@@ -1093,6 +1458,8 @@ def main():
     print(f"Макс. итераций: {args.max_iter}")
     print(f"Ядра: {', '.join(kernels)}")
     print(f"Число seed: {args.n_seeds} ({seeds[0]}..{seeds[-1]})")
+    print(f"Граничные точки: {'да' if args.include_boundaries else 'нет'}")
+    print(f"Дискретный режим: {'да' if args.discrete else 'нет'}")
     print("=" * 80)
 
     print(f"\n[1/2] Загрузка данных...")
@@ -1120,6 +1487,7 @@ def main():
             seeds=seeds,
             save_dir=args.save_dir,
             noise_type=args.noise_type,
+            font_scale=args.font_scale,
         )
 
     if compare_kernels_mode:
@@ -1137,8 +1505,31 @@ def main():
             save_dir=args.save_dir,
             seeds=seeds,
             n_initial=args.n_initial,
-            kernel=kernels
+            kernel=kernels[0],
+            include_boundaries=args.include_boundaries,
+            discrete=args.discrete,
+            font_scale=args.font_scale,
         )
+
+        clean_path = find_latest_data_file(data_dir=args.data_dir, noise_type='no_noise')
+        noisy_path = find_latest_data_file(data_dir=args.data_dir, noise_type='with_noise')
+        clean_rmse = run_strategies_mean_rmse(
+            args, strategies_to_run, seeds, kernels[0], clean_path,
+            noise_type='no_noise', noise_level=0.05, force_add_noise=False,
+            verbose_label='Таблица шума: чистые данные',
+        )
+        noisy_rmse = run_strategies_mean_rmse(
+            args, strategies_to_run, seeds, kernels[0], noisy_path,
+            noise_type='with_noise', noise_level=0.05, force_add_noise=True,
+            verbose_label='Таблица шума: зашумлённые данные (5%)',
+        )
+        save_noise_comparison_table(
+            clean_rmse, noisy_rmse, args.save_dir, seeds, kernels[0],
+        )
+        run_noise_sensitivity_experiment(
+            args, strategies_to_run, seeds, kernels[0], args.save_dir,
+        )
+
         print(f"\n🎉 Эксперимент завершён ({args.n_seeds} seed)!")
         print(f"📁 Результаты: {os.path.abspath(args.save_dir)}/")
         return aggregated, per_seed_results
@@ -1151,6 +1542,26 @@ def main():
         random_baseline=last['random_baseline'],
         n_initial=args.n_initial,
         non_adaptive_time=last['non_adaptive_time'],
+        font_scale=args.font_scale,
+    )
+
+    clean_path = find_latest_data_file(data_dir=args.data_dir, noise_type='no_noise')
+    noisy_path = find_latest_data_file(data_dir=args.data_dir, noise_type='with_noise')
+    clean_rmse = run_strategies_mean_rmse(
+        args, strategies_to_run, seeds, kernels[0], clean_path,
+        noise_type='no_noise', noise_level=0.05, force_add_noise=False,
+        verbose_label='Таблица шума: чистые данные',
+    )
+    noisy_rmse = run_strategies_mean_rmse(
+        args, strategies_to_run, seeds, kernels[0], noisy_path,
+        noise_type='with_noise', noise_level=0.05, force_add_noise=True,
+        verbose_label='Таблица шума: зашумлённые данные (5%)',
+    )
+    save_noise_comparison_table(
+        clean_rmse, noisy_rmse, args.save_dir, seeds, kernels[0],
+    )
+    run_noise_sensitivity_experiment(
+        args, strategies_to_run, seeds, kernels[0], args.save_dir,
     )
 
     print(f"\n🎉 Эксперимент завершён!")
