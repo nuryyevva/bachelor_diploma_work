@@ -6,10 +6,10 @@
     python experiments/run_strategies.py --all
 
     # Запустить конкретные стратегии
-    python experiments/run_strategies.py --strategies max_variance expected_improvement random
+    python experiments/run_strategies.py --strategies max_variance random
 
     # Запустить с кастомными параметрами
-    python experiments/run_strategies.py --strategies max_variance lcb --noise_type no_noise --max_iter 30
+    python experiments/run_strategies.py --strategies max_variance --noise_type no_noise --max_iter 30
 
     # Запустить одну стратегию
     python experiments/run_strategies.py --strategy farthest_point
@@ -47,19 +47,14 @@ from src.models.adaptive import AdaptiveModel
 from src.strategies import (
     get_strategy,
     MaxVarianceStrategy,
-    ExpectedImprovementStrategy,
-    LowerConfidenceBoundStrategy,
     RandomStrategy,
     FarthestPointStrategy,
 )
 
 
-# Доступные стратегии
+# Доступные стратегии адаптивного обучения
 AVAILABLE_STRATEGIES = {
     'max_variance': MaxVarianceStrategy,
-    'expected_improvement': ExpectedImprovementStrategy,
-    # 'lcb': LowerConfidenceBoundStrategy,
-    'lower_confidence_bound': LowerConfidenceBoundStrategy,
     'random': RandomStrategy,
     'farthest_point': FarthestPointStrategy,
 }
@@ -73,7 +68,7 @@ def parse_args():
         epilog="""
 Примеры:
   %(prog)s --all                              Запустить все стратегии
-  %(prog)s --strategies max_variance ei       Запустить конкретные стратегии
+  %(prog)s --strategies max_variance random      Запустить конкретные стратегии
   %(prog)s --strategy random                  Запустить одну стратегию
   %(prog)s --all --noise_type no_noise        Все стратегии на чистых данных
   %(prog)s --all --max_iter 50                Увеличить макс. количество итераций
