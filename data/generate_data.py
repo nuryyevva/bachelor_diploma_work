@@ -164,9 +164,9 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, fo
         f.write(stats)
     print(f"✅ Статистика сохранена в: {stats_filename}")
 
-    fig = plt.figure(figsize=(20, 12))
+    fig = plt.figure(figsize=(10, 36))
 
-    ax1 = fig.add_subplot(2, 3, 1)
+    ax1 = fig.add_subplot(6, 1, 1)
     ax1.scatter(df['total_thickness_m'] * 1e3, df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='blue', s=50)
     ax1.set_xlabel('Толщина пластины (мм)')
@@ -174,7 +174,7 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, fo
     ax1.set_title('Зависимость критической нагрузки от толщины')
     ax1.grid(True, alpha=0.3)
 
-    ax2 = fig.add_subplot(2, 3, 2)
+    ax2 = fig.add_subplot(6, 1, 2)
     ax2.scatter(df['theta_base_deg'], df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='green', s=50)
     ax2.set_xlabel('Базовый угол укладки (градусы)')
@@ -182,7 +182,7 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, fo
     ax2.set_title('Зависимость критической нагрузки от угла укладки')
     ax2.grid(True, alpha=0.3)
 
-    ax3 = fig.add_subplot(2, 3, 3)
+    ax3 = fig.add_subplot(6, 1, 3)
     ax3.scatter(df['aspect_ratio'], df['critical_load_N_per_m'] / 1e3,
                 alpha=0.7, c='red', s=50)
     ax3.set_xlabel('Соотношение сторон (a/b)')
@@ -190,14 +190,14 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, fo
     ax3.set_title('Зависимость критической нагрузки от соотношения сторон')
     ax3.grid(True, alpha=0.3)
 
-    ax4 = fig.add_subplot(2, 3, 4)
+    ax4 = fig.add_subplot(6, 1, 4)
     ax4.hist(df['critical_load_N_per_m'] / 1e3, bins=20, color='purple', alpha=0.7, edgecolor='black')
     ax4.set_xlabel('Критическая нагрузка (кН/м)')
     ax4.set_ylabel('Частота')
     ax4.set_title('Распределение критической нагрузки')
     ax4.grid(True, alpha=0.3, axis='y')
 
-    ax5 = fig.add_subplot(2, 3, 5, projection='3d')
+    ax5 = fig.add_subplot(6, 1, 5, projection='3d')
     sc5 = ax5.scatter(df['total_thickness_m'] * 1e3,
                       df['theta_base_deg'],
                       df['critical_load_N_per_m'] / 1e3,
@@ -211,7 +211,7 @@ def save_and_visualize(df, seed, output_dir, suffix="", add_noise_flag=False, fo
     ax5.set_title('3D: Толщина × Угол × Нагрузка')
     plt.colorbar(sc5, ax=ax5, label='Нагрузка (кН/м)', shrink=0.6)
 
-    ax6 = fig.add_subplot(2, 3, 6, projection='3d')
+    ax6 = fig.add_subplot(6, 1, 6, projection='3d')
     sc6 = ax6.scatter(df['total_thickness_m'] * 1e3,
                       df['aspect_ratio'],
                       df['critical_load_N_per_m'] / 1e3,
