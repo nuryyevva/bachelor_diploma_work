@@ -17,7 +17,7 @@ def plot_convergence(
         save_path (str): Путь для сохранения графика.
         title (str): Заголовок графика.
     """
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 10))
 
     # График адаптивной модели
     plt.plot(

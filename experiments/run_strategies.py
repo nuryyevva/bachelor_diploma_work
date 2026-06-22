@@ -50,6 +50,8 @@ from src.strategies import (
     MaxVarianceStrategy,
     RandomStrategy,
     FarthestPointStrategy,
+    ExpectedImprovementStrategy,
+    LowerConfidenceBoundStrategy,
 )
 
 
@@ -58,6 +60,8 @@ AVAILABLE_STRATEGIES = {
     'max_variance': MaxVarianceStrategy,
     'random': RandomStrategy,
     'farthest_point': FarthestPointStrategy,
+    'expected_improvement': ExpectedImprovementStrategy,
+    'lower_confidence_bound': LowerConfidenceBoundStrategy,
 }
 
 

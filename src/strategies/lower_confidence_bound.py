@@ -4,7 +4,7 @@ import numpy as np
 class LowerConfidenceBoundStrategy:
     """Стратегия выбора точки на основе Lower Confidence Bound (LCB)."""
 
-    def __init__(self, kappa=2.0):
+    def __init__(self, kappa=3.0):
         """
         Инициализация стратегии LCB.
 
