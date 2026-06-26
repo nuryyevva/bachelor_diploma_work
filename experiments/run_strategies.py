@@ -651,26 +651,72 @@ def compare_kernels(
 
     try:
         import matplotlib.pyplot as plt
-
         apply_plot_style(font_scale)
+
+        # Паттерны штриховки (можно менять под свои предпочтения)
+        hatches = ['/', '\\', '|', '-', '+', 'x', 'o', 'O', '.', '*']
 
         for strategy_name, kernel_stats in kernel_aggregated.items():
             fig, ax = plt.subplots(figsize=(8, 5))
             available = [k for k in kernels if k in kernel_stats]
             rmse_data = [kernel_stats[k]['rmse_values'] for k in available]
-            ax.boxplot(rmse_data, labels=available, patch_artist=True)
+
+            # ---- ЧЁРНО-БЕЛАЯ ВЕРСИЯ (штриховка, серая заливка, без легенды) ----
+            bp = ax.boxplot(
+                rmse_data,
+                labels=available,
+                patch_artist=True,
+                boxprops=dict(edgecolor='black', linewidth=1.5),
+                whiskerprops=dict(color='black', linewidth=1.5),
+                capprops=dict(color='black', linewidth=1.5),
+                medianprops=dict(color='black', linewidth=2.5),
+                flierprops=dict(marker='o', markerfacecolor='gray', markersize=4, linestyle='none')
+            )
+
+            for i, patch in enumerate(bp['boxes']):
+                patch.set_facecolor('lightgray')
+                patch.set_alpha(0.6)
+                patch.set_hatch(hatches[i % len(hatches)])
+                patch.set_edgecolor('black')
+
             ax.set_ylabel('RMSE (кН/м)')
             ax.set_xlabel('Ядро')
             ax.set_title(f'Сравнение ядер: {strategy_name} ({len(seeds)} seed)')
             ax.grid(True, alpha=0.3, axis='y')
 
-            plot_path = os.path.join(
+            plot_path_bw = os.path.join(
                 save_dir,
                 f"kernels_boxplot_{strategy_name}_{timestamp}.png",
             )
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"✅ Boxplot ядер ({strategy_name}): {plot_path}")
+            plt.savefig(plot_path_bw, dpi=150, bbox_inches='tight')
+            print(f"✅ Boxplot ядер (ч/б) ({strategy_name}): {plot_path_bw}")
+
+            # ---- ЦВЕТНАЯ ВЕРСИЯ (стандартные цвета, легенда) ----
+            fig_color, ax_color = plt.subplots(figsize=(8, 5))
+            # Используем стандартный boxplot с цветами по умолчанию
+            bp_color = ax_color.boxplot(
+                rmse_data,
+                labels=available,
+                patch_artist=True,
+                medianprops=dict(linewidth=2)
+            )
+            # Цвета из палитры
+            colors = plt.cm.tab10(np.linspace(0, 1, len(available)))
+            for i, patch in enumerate(bp_color['boxes']):
+                patch.set_facecolor(colors[i % len(colors)])
+                patch.set_alpha(0.7)
+            ax_color.set_ylabel('RMSE (кН/м)')
+            ax_color.set_xlabel('Ядро')
+            ax_color.set_title(f'Сравнение ядер: {strategy_name} ({len(seeds)} seed)')
+            ax_color.grid(True, alpha=0.3, axis='y')
+            plot_path_color = os.path.join(
+                save_dir,
+                f"kernels_boxplot_{strategy_name}_{timestamp}_color.png",
+            )
+            plt.savefig(plot_path_color, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            plt.close(fig_color)
+            print(f"✅ Boxplot ядер (цветной) ({strategy_name}): {plot_path_color}")
 
     except Exception as e:
         print(f"⚠️ Не удалось создать boxplot ядер: {e}")
@@ -806,27 +852,86 @@ def compare_multi_seed(
 
         apply_plot_style(font_scale)
 
+        # ---- ЧЁРНО-БЕЛАЯ ВЕРСИЯ (boxplot со штриховкой) ----
         fig, ax = plt.subplots(figsize=(12, 6))
         rmse_data = [aggregated[name]['rmse_values'] for name in sorted_names]
-        ax.boxplot(rmse_data, labels=sorted_names, patch_artist=True)
-        ax.axhline(
-            y=na['mean_rmse'],
-            color='red',
-            linestyle='--',
-            linewidth=2,
-            label=f"Неадаптивная (baseline): {na['mean_rmse']:.0f} кН/м",
+
+        bp = ax.boxplot(
+            rmse_data,
+            labels=sorted_names,
+            patch_artist=True,
+            boxprops=dict(edgecolor='black', linewidth=1.5),
+            whiskerprops=dict(color='black', linewidth=1.5),
+            capprops=dict(color='black', linewidth=1.5),
+            medianprops=dict(color='black', linewidth=2.5),
+            flierprops=dict(marker='o', markerfacecolor='gray', markersize=4, linestyle='none')
         )
+
+        hatches = ['/', '\\', '|', '-', '+', 'x', 'o', 'O', '.', '*']
+        for i, patch in enumerate(bp['boxes']):
+            patch.set_facecolor('lightgray')
+            patch.set_alpha(0.6)
+            patch.set_hatch(hatches[i % len(hatches)])
+            patch.set_edgecolor('black')
+
+        baseline_val = na['mean_rmse']
+        ax.axhline(y=baseline_val, color='black', linestyle='--', linewidth=2)
+
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        x_text = x_max - 0.1 * (x_max - x_min)
+        y_text = baseline_val
+        ax.annotate(
+            f'Baseline: {baseline_val:.1f} кН/м',
+            xy=(x_text, y_text),
+            xytext=(x_text + 0.05 * (x_max - x_min), y_text + 0.05 * (y_max - y_min)),
+            arrowprops=dict(
+                arrowstyle='->',
+                connectionstyle='arc3,rad=0.1',
+                color='black',
+                lw=1.5,
+            ),
+            fontsize=10 * font_scale,
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8),
+            ha='left',
+            va='center',
+        )
+
         ax.set_ylabel('RMSE (кН/м)')
         ax.set_xlabel('Стратегия')
-        ax.set_title(f'Распределение RMSE по {len(seeds)} seed')
-        ax.legend(loc='upper right')
+        ax.set_title(f' ')
         ax.grid(True, alpha=0.3, axis='y')
         plt.xticks(rotation=25, ha='right')
 
-        boxplot_path = os.path.join(save_dir, f"strategies_rmse_boxplot_{timestamp}.png")
-        plt.savefig(boxplot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"✅ Boxplot сохранён: {boxplot_path}")
+        boxplot_path_bw = os.path.join(save_dir, f"strategies_rmse_boxplot_{timestamp}.png")
+        plt.savefig(boxplot_path_bw, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"✅ Boxplot (ч/б) сохранён: {boxplot_path_bw}")
+
+        # ---- ЦВЕТНАЯ ВЕРСИЯ (стандартные цвета, легенда) ----
+        fig_color, ax_color = plt.subplots(figsize=(12, 6))
+        bp_color = ax_color.boxplot(
+            rmse_data,
+            labels=sorted_names,
+            patch_artist=True,
+            medianprops=dict(linewidth=2)
+        )
+        colors = plt.cm.tab10(np.linspace(0, 1, len(sorted_names)))
+        for i, patch in enumerate(bp_color['boxes']):
+            patch.set_facecolor(colors[i % len(colors)])
+            patch.set_alpha(0.7)
+
+        ax_color.axhline(y=baseline_val, color='red', linestyle='--', linewidth=2, label='Базовая линия')
+        ax_color.set_ylabel('RMSE (кН/м)')
+        ax_color.set_xlabel('Стратегия')
+        ax_color.set_title(f'Распределение RMSE по {len(seeds)} seed')
+        ax_color.legend(loc='upper right')
+        ax_color.grid(True, alpha=0.3, axis='y')
+        plt.xticks(rotation=25, ha='right')
+        boxplot_path_color = os.path.join(save_dir, f"strategies_rmse_boxplot_{timestamp}_color.png")
+        plt.savefig(boxplot_path_color, dpi=150, bbox_inches='tight')
+        plt.close(fig_color)
+        print(f"✅ Boxplot (цветной) сохранён: {boxplot_path_color}")
 
     except Exception as e:
         print(f"⚠️ Не удалось создать boxplot: {e}")
@@ -890,11 +995,12 @@ def plot_convergence_with_ci(
     """График сходимости RMSE с доверительными интервалами ±1 std и линией baseline."""
     try:
         import matplotlib.pyplot as plt
+        import numpy as np
 
         apply_plot_style(font_scale)
         os.makedirs(save_dir, exist_ok=True)
-        fig, ax = plt.subplots(figsize=(12, 6))
 
+        # Собираем истории по стратегиям
         strategy_names = [
             r['strategy_name'] for r in per_seed_results[0]['all_results']
         ]
@@ -903,17 +1009,119 @@ def plot_convergence_with_ci(
             for res in run['all_results']:
                 histories_by_strategy[res['strategy_name']].append(res['rmse_history'])
 
+        # Сортируем по финальному RMSE (для удобства)
         sorted_names = sorted(
             strategy_names,
             key=lambda n: _mean_std_rmse_history(histories_by_strategy[n])[0][-1],
         )
-        colors = plt.cm.tab10(np.linspace(0, 1, len(sorted_names)))
 
-        for i, name in enumerate(sorted_names):
+        # Подготовка стилей для ч/б различимости
+        linestyles = ['-', '--', '-.', ':']
+        markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
+        grays = ['black', 'dimgray', 'gray', 'darkgray']  # разные оттенки
+
+        # Собираем данные для построения
+        data = []
+        for name in sorted_names:
             mean_hist, std_hist = _mean_std_rmse_history(histories_by_strategy[name])
             iterations = np.arange(1, len(mean_hist) + 1)
-            ax.plot(
-                iterations,
+            data.append((name, iterations, mean_hist, std_hist))
+
+        # ---- ЧЁРНО-БЕЛАЯ ВЕРСИЯ (подписи со стрелками) ----
+        fig_bw, ax_bw = plt.subplots(figsize=(12, 6))
+        for i, (name, iter_arr, mean_hist, std_hist) in enumerate(data):
+            ls = linestyles[i % len(linestyles)]
+            mk = markers[i % len(markers)]
+            color = grays[i % len(grays)]
+            ax_bw.plot(
+                iter_arr,
+                mean_hist,
+                marker=mk,
+                linestyle=ls,
+                color=color,
+                linewidth=2,
+                markersize=6,
+                label=name,
+            )
+            ax_bw.fill_between(
+                iter_arr,
+                mean_hist - std_hist,
+                mean_hist + std_hist,
+                color=color,
+                alpha=0.2,
+            )
+
+        ax_bw.axhline(
+            y=non_adaptive_rmse,
+            color='black',
+            linestyle='--',
+            linewidth=2,
+            label=f'Базовая линия: {non_adaptive_rmse:.2f} кН/м',
+        )
+
+        y_min, y_max = ax_bw.get_ylim()
+        y_range = y_max - y_min
+        x_min, x_max = ax_bw.get_xlim()
+        x_range = x_max - x_min
+
+        for i, (name, iter_arr, mean_hist, std_hist) in enumerate(data):
+            x_last = iter_arr[-1]
+            y_last = mean_hist[-1]
+            offset_x = 0.05 * x_range
+            offset_y = (0.05 + 0.1 * (i % 3)) * y_range
+            if i % 2 == 0:
+                offset_y = -offset_y
+
+            ax_bw.annotate(
+                name,
+                xy=(x_last, y_last),
+                xytext=(x_last + offset_x, y_last + offset_y),
+                arrowprops=dict(
+                    arrowstyle='->',
+                    connectionstyle='arc3,rad=0.1',
+                    color='black',
+                    lw=1.5,
+                ),
+                fontsize=10 * font_scale,
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8),
+                ha='left',
+                va='center',
+            )
+
+        x_baseline = x_max - 0.1 * x_range
+        y_baseline = non_adaptive_rmse
+        ax_bw.annotate(
+            f'Базовая линия: {non_adaptive_rmse:.2f} кН/м',
+            xy=(x_baseline, y_baseline),
+            xytext=(x_baseline + 0.05 * x_range, y_baseline + 0.05 * y_range),
+            arrowprops=dict(
+                arrowstyle='->',
+                connectionstyle='arc3,rad=0.1',
+                color='black',
+                lw=1.5,
+            ),
+            fontsize=10 * font_scale,
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8),
+            ha='left',
+            va='center',
+        )
+
+        ax_bw.set_xlabel('Адаптивная итерация')
+        ax_bw.set_ylabel('RMSE (кН/м)')
+        ax_bw.set_title(f' ')
+        ax_bw.grid(True, alpha=0.3)
+
+        plot_path_bw = os.path.join(save_dir, 'convergence_with_ci.png')
+        plt.savefig(plot_path_bw, dpi=150, bbox_inches='tight')
+        plt.close(fig_bw)
+        print(f"✅ График сходимости с CI (ч/б) сохранён: {plot_path_bw}")
+
+        # ---- ЦВЕТНАЯ ВЕРСИЯ (стандартные цвета, легенда) ----
+        fig_color, ax_color = plt.subplots(figsize=(12, 6))
+        colors = plt.cm.tab10(np.linspace(0, 1, len(data)))
+        for i, (name, iter_arr, mean_hist, std_hist) in enumerate(data):
+            ax_color.plot(
+                iter_arr,
                 mean_hist,
                 marker='o',
                 label=name,
@@ -921,36 +1129,35 @@ def plot_convergence_with_ci(
                 linewidth=2,
                 markersize=4,
             )
-            ax.fill_between(
-                iterations,
+            ax_color.fill_between(
+                iter_arr,
                 mean_hist - std_hist,
                 mean_hist + std_hist,
                 color=colors[i],
                 alpha=0.2,
             )
 
-        ax.axhline(
+        ax_color.axhline(
             y=non_adaptive_rmse,
             color='red',
             linestyle='--',
             linewidth=2,
-            label=f'Неадаптивная (baseline): {non_adaptive_rmse:.2f} кН/м',
+            label=f'Базовая линия: {non_adaptive_rmse:.2f} кН/м',
         )
-
-        ax.set_xlabel('Адаптивная итерация')
-        ax.set_ylabel('RMSE (кН/м)')
-        ax.set_title(
+        ax_color.set_xlabel('Адаптивная итерация')
+        ax_color.set_ylabel('RMSE (кН/м)')
+        ax_color.set_title(
             f'Сходимость RMSE с доверительными интервалами (±1 std, {n_seeds} seed)'
         )
-        ax.legend(loc='upper right')
-        ax.grid(True, alpha=0.3)
+        ax_color.legend(loc='upper right')
+        ax_color.grid(True, alpha=0.3)
 
-        plot_path = os.path.join(save_dir, 'convergence_with_ci.png')
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
+        plot_path_color = os.path.join(save_dir, 'convergence_with_ci_color.png')
+        plt.savefig(plot_path_color, dpi=150, bbox_inches='tight')
+        plt.close(fig_color)
+        print(f"✅ График сходимости с CI (цветной) сохранён: {plot_path_color}")
 
-        print(f"✅ График сходимости с CI сохранён: {plot_path}")
-        return plot_path
+        return plot_path_bw
 
     except Exception as e:
         print(f"⚠️ Не удалось создать график сходимости с CI: {e}")
@@ -1018,7 +1225,7 @@ def plot_convergence_all_strategies(
             color='red',
             linestyle='--',
             linewidth=2,
-            label=f'Неадаптивная (baseline): {non_adaptive_rmse:.2f} кН/м',
+            label=f'Неадаптивная модель: {non_adaptive_rmse:.2f} кН/м',
         )
 
         ax.set_xlabel('Адаптивная итерация')
@@ -1211,38 +1418,93 @@ def plot_noise_sensitivity(
     """Визуализация RMSE vs уровень шума для каждой стратегии."""
     try:
         import matplotlib.pyplot as plt
+        import numpy as np
 
         apply_plot_style(font_scale)
         os.makedirs(save_dir, exist_ok=True)
 
-        fig, ax = plt.subplots(figsize=(10, 6))
         noise_pct = [l * 100 for l in noise_levels]
-        colors = plt.cm.tab10(np.linspace(0, 1, len(sensitivity)))
+        items = sorted(sensitivity.items())
 
-        for i, (strategy_name, level_map) in enumerate(sorted(sensitivity.items())):
+        # ---- ЧЁРНО-БЕЛАЯ ВЕРСИЯ (подписи со стрелками, разные маркеры/стили) ----
+        fig_bw, ax_bw = plt.subplots(figsize=(10, 6))
+        linestyles = ['-', '--', '-.', ':']
+        markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
+
+        for idx, (strategy_name, level_map) in enumerate(items):
             rmse_values = [level_map[l] for l in noise_levels]
-            ax.plot(
+            ls = linestyles[idx % len(linestyles)]
+            mk = markers[idx % len(markers)]
+            ax_bw.plot(
+                noise_pct,
+                rmse_values,
+                marker=mk,
+                linestyle=ls,
+                label=strategy_name,
+                linewidth=2,
+                markersize=8,
+                color='black' if idx % 2 == 0 else 'gray',
+            )
+
+            x_last = noise_pct[-1]
+            y_last = rmse_values[-1]
+            offset_x = 1.5
+            offset_y = (0.05 + 0.1 * (idx % 3)) * (max(rmse_values) - min(rmse_values))
+            if idx % 2 == 0:
+                offset_y = -offset_y
+
+            ax_bw.annotate(
+                strategy_name,
+                xy=(x_last, y_last),
+                xytext=(x_last + offset_x, y_last + offset_y),
+                arrowprops=dict(
+                    arrowstyle='->',
+                    connectionstyle='arc3,rad=0.1',
+                    color='black',
+                    lw=1.5,
+                ),
+                fontsize=10 * font_scale,
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8),
+                ha='left',
+                va='center',
+            )
+
+        ax_bw.set_xlabel('Уровень шума, %')
+        ax_bw.set_ylabel('RMSE (кН/м)')
+        ax_bw.set_title('Чувствительность стратегий к уровню шума')
+        ax_bw.grid(True, alpha=0.3)
+
+        plot_path_bw = os.path.join(save_dir, 'noise_sensitivity.png')
+        plt.savefig(plot_path_bw, dpi=150, bbox_inches='tight')
+        plt.close(fig_bw)
+        print(f"✅ График чувствительности (ч/б) сохранён: {plot_path_bw}")
+
+        # ---- ЦВЕТНАЯ ВЕРСИЯ (стандартные цвета, легенда) ----
+        fig_color, ax_color = plt.subplots(figsize=(10, 6))
+        colors = plt.cm.tab10(np.linspace(0, 1, len(items)))
+        for idx, (strategy_name, level_map) in enumerate(items):
+            rmse_values = [level_map[l] for l in noise_levels]
+            ax_color.plot(
                 noise_pct,
                 rmse_values,
                 marker='o',
                 label=strategy_name,
-                color=colors[i],
+                color=colors[idx],
                 linewidth=2,
                 markersize=6,
             )
+        ax_color.set_xlabel('Уровень шума, %')
+        ax_color.set_ylabel('RMSE (кН/м)')
+        ax_color.set_title('Чувствительность стратегий к уровню шума')
+        ax_color.legend(loc='best')
+        ax_color.grid(True, alpha=0.3)
 
-        ax.set_xlabel('Уровень шума, %')
-        ax.set_ylabel('RMSE (кН/м)')
-        ax.set_title('Чувствительность стратегий к уровню шума')
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
+        plot_path_color = os.path.join(save_dir, 'noise_sensitivity_color.png')
+        plt.savefig(plot_path_color, dpi=150, bbox_inches='tight')
+        plt.close(fig_color)
+        print(f"✅ График чувствительности (цветной) сохранён: {plot_path_color}")
 
-        plot_path = os.path.join(save_dir, 'noise_sensitivity.png')
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-
-        print(f"✅ График чувствительности к шуму сохранён: {plot_path}")
-        return plot_path
+        return plot_path_bw
 
     except Exception as e:
         print(f"⚠️ Не удалось создать график чувствительности: {e}")

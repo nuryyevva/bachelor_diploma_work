@@ -241,6 +241,7 @@ def save_report(
 
 def plot_boxplot(aggregated: Dict[str, Dict], save_dir: str, font_scale: float = 1.0) -> str:
     import matplotlib.pyplot as plt
+    import numpy as np
 
     apply_plot_style(font_scale)
     os.makedirs(save_dir, exist_ok=True)
@@ -248,19 +249,62 @@ def plot_boxplot(aggregated: Dict[str, Dict], save_dir: str, font_scale: float =
     labels = [MODEL_LABELS[n] for n in sorted_names]
     data = [aggregated[n]["rmse_values"] for n in sorted_names]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.boxplot(data, labels=labels, patch_artist=True)
-    ax.set_ylabel("RMSE (кН/м)")
-    ax.set_xlabel("Модель")
-    ax.set_title("Сравнение суррогатных моделей на начальной выборке (35 точек LHS)")
-    ax.grid(True, alpha=0.3, axis="y")
+    # ---- ЧЁРНО-БЕЛАЯ ВЕРСИЯ (штриховка, серая заливка) ----
+    fig_bw, ax_bw = plt.subplots(figsize=(10, 6))
+    bp = ax_bw.boxplot(
+        data,
+        labels=labels,
+        patch_artist=True,
+        boxprops=dict(edgecolor='black', linewidth=1.5),
+        whiskerprops=dict(color='black', linewidth=1.5),
+        capprops=dict(color='black', linewidth=1.5),
+        medianprops=dict(color='black', linewidth=2.5),
+        flierprops=dict(marker='o', markerfacecolor='gray', markersize=4, linestyle='none')
+    )
+    hatches = ['/', '\\', '|', '-', '+', 'x', 'o', 'O', '.', '*']
+    for i, patch in enumerate(bp['boxes']):
+        patch.set_facecolor('lightgray')
+        patch.set_alpha(0.6)
+        patch.set_hatch(hatches[i % len(hatches)])
+        patch.set_edgecolor('black')
+
+    ax_bw.set_ylabel("RMSE (кН/м)")
+    ax_bw.set_xlabel("Модель")
+    ax_bw.set_title("Сравнение суррогатных моделей на начальной выборке (35 точек LHS)")
+    ax_bw.grid(True, alpha=0.3, axis="y")
     plt.xticks(rotation=15, ha="right")
 
-    plot_path = os.path.join(save_dir, "comparison_models_boxplot.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-    plt.close()
+    plot_path_bw = os.path.join(save_dir, "comparison_models_boxplot.png")
+    plt.savefig(plot_path_bw, dpi=150, bbox_inches="tight")
+    plt.close(fig_bw)
 
-    return plot_path
+    # ---- ЦВЕТНАЯ ВЕРСИЯ (стандартные цвета) ----
+    fig_color, ax_color = plt.subplots(figsize=(10, 6))
+    bp_color = ax_color.boxplot(
+        data,
+        labels=labels,
+        patch_artist=True,
+        medianprops=dict(linewidth=2)
+    )
+    colors = plt.cm.tab10(np.linspace(0, 1, len(labels)))
+    for i, patch in enumerate(bp_color['boxes']):
+        patch.set_facecolor(colors[i % len(colors)])
+        patch.set_alpha(0.7)
+
+    ax_color.set_ylabel("RMSE (кН/м)")
+    ax_color.set_xlabel("Модель")
+    ax_color.set_title("Сравнение суррогатных моделей на начальной выборке (35 точек LHS)")
+    ax_color.grid(True, alpha=0.3, axis="y")
+    plt.xticks(rotation=15, ha="right")
+
+    plot_path_color = os.path.join(save_dir, "comparison_models_boxplot_color.png")
+    plt.savefig(plot_path_color, dpi=150, bbox_inches="tight")
+    plt.close(fig_color)
+
+    print(f"✅ Boxplot моделей (ч/б) сохранён: {plot_path_bw}")
+    print(f"✅ Boxplot моделей (цветной) сохранён: {plot_path_color}")
+
+    return plot_path_bw
 
 
 def main():
